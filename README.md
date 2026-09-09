@@ -25,7 +25,8 @@ shortcut, and the engine underneath is the same either way.
 | suits | a notebook, a teaching page where the reader edits the model | a post or a document with one model in it |
 | here | `examples/pyodide/` | `examples/browser/` |
 
-The same two shapes exist for Stan, against the same engine:
+The same two shapes exist for Stan, against the same engine — a separate front
+end onto it, not a step in this one:
 [stanwasm](https://github.com/habakan/stanwasm)'s own gallery compiles Stan
 source in the page from JavaScript, and
 [pystanwasm](https://github.com/habakan/pystanwasm) drives it from Python under
@@ -148,13 +149,17 @@ Not a speed claim, in either direction.
 
 `src/pymcwasm/lowering.py` walks the PyTensor graph of `model.logp()` and writes
 it as instructions for the autodiff tape in
-[stanwasm](https://github.com/habakan/stanwasm) — a Stan implementation, whose
-emitter turns a tape into a standalone wasm module and whose `AotSampler` runs
-nuts-rs against one. Neither half of stanwasm knows Stan is not involved here:
-the tape and the module ABI are all that is shared.
+[stanwasm](https://github.com/habakan/stanwasm), whose emitter turns a tape into
+a standalone wasm module and whose `AotSampler` runs nuts-rs against one.
 
-PyMC does not need the autodiff. PyTensor differentiates its own graph; what
-gets used is the emitter and the sampler.
+**No Stan is involved, and nothing is translated into it.** The name is
+stanwasm's because a Stan parser is what first filled that tape; it is a sibling
+front end onto the same emitter, and this path never reaches it. What gets used
+is the tape, the emitter and the sampler, none of which know what wrote them.
+
+PyMC does not need the autodiff either — PyTensor differentiates its own graph,
+and the tape here carries a log density that is already differentiable, not a
+translation of the model.
 
 ```
 src/pymcwasm/      the package a Pyodide page imports, and the lowering
