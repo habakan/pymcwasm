@@ -10,7 +10,7 @@ export const MODELS = [
 
 let ready;
 export function start() {
-  ready ??= init({ module_or_path: new URL("../../vendor/pkg/stanwasm_bg.wasm", import.meta.url) });
+  ready ??= init({ module_or_path: new URL("../../vendor/pkg/tapewasm_bg.wasm", import.meta.url) });
   return ready;
 }
 
@@ -28,7 +28,7 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = 
   const bytes = await (await fetch(`../../artifacts/${name}/model.wasm`)).arrayBuffer();
 
   const aot = await WebAssembly.instantiate(bytes, {
-    stan: { memory: sharedMemory() },
+    tapewasm: { memory: sharedMemory() },
     Math: MATH,
   });
   setAotExports(aot.instance.exports);

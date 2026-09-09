@@ -7,7 +7,7 @@ Writes into <out>/:
     meta.json       what `new AotSampler(...)` takes, plus the point to start from
     reference.json  nutpie's posterior mean and sd per parameter, for comparison
 
-    STANWASM=/path/to/stanwasm uv run --with pymc --with scipy --with nutpie \\
+    TAPEWASM=/path/to/tapewasm uv run --with pymc --with scipy --with nutpie \\
         python build/build_artifact.py <model> artifacts/<model>
 """
 
@@ -27,7 +27,7 @@ from pymcwasm.lowering import MODELS, REPO, lower
 def compile_tape(tape_path, wasm_path):
     """Run the emitter over a tape file, and read back what a host needs."""
     out = subprocess.run(
-        ["cargo", "run", "-q", "--release", "-p", "stanwasm-codegen",
+        ["cargo", "run", "-q", "--release", "-p", "tapewasm-codegen",
          "--example", "tape_from_text", "--", tape_path, wasm_path],
         cwd=REPO, capture_output=True, text=True, check=True,
     )
@@ -80,6 +80,11 @@ def reference_posterior(model, names, draws=1000, chains=4, seed=7):
 
     The draws come out constrained and the module's do not, so comparing them
     directly would leave every transformed parameter unchecked.
+
+    Seeded, but not reproducible across versions: nutpie 0.16.8 puts
+    eight_schools' `tau_log__` a third of its own sd from where an earlier
+    version put it, which is the funnel rather than a bug. `versions` records
+    what produced this file so a moved number can be told from a broken one.
     """
     import pytensor
 
@@ -155,7 +160,16 @@ def build(name, out_dir):
         )
 
     with open(os.path.join(out_dir, "reference.json"), "w") as f:
-        json.dump(reference_posterior(model, names), f)
+        import nutpie as _nutpie
+        import pytensor as _pytensor
+
+        ref = reference_posterior(model, names)
+        ref["versions"] = {
+            "nutpie": _nutpie.__version__,
+            "pymc": pm.__version__,
+            "pytensor": _pytensor.__version__,
+        }
+        json.dump(ref, f)
 
     print(f"{name}: {meta['n_params']} params, "
           f"{os.path.getsize(wasm_path)} bytes of wasm, "

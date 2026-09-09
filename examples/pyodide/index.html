@@ -33,7 +33,7 @@
 <h1>A PyMC model written here, compiled here, sampled here</h1>
 <p class="sub">
   PyMC runs in this page under Pyodide and builds the graph. The log density is
-  lowered to a tape, stanwasm's emitter turns that into a wasm module, and
+  lowered to a tape, tapewasm's emitter turns that into a wasm module, and
   nuts-rs samples it — all in the tab. Nothing is precompiled and no server is
   involved. Edit the model, or pick another, and compile it again.
 </p>
@@ -102,12 +102,12 @@ async function compile() {
   say("running your code, then lowering and emitting…");
   try {
     py.globals.set("user_source", $("src").value);
-    py.globals.set("SW", new URL("../../vendor/pkg/stanwasm.js", location.href).href);
+    py.globals.set("SW", new URL("../../vendor/pkg/tapewasm.js", location.href).href);
     await py.runPythonAsync(`
 import pymcwasm
 ns = {}
 exec(user_source, ns)
-compiled = await pymcwasm.compile(ns["model"], stanwasm_path=SW)
+compiled = await pymcwasm.compile(ns["model"], tapewasm_path=SW)
 `);
     $("draw").disabled = false;
     await draw();

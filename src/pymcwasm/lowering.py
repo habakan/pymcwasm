@@ -1,7 +1,7 @@
 """Lower a PyMC logp graph onto the tape, and check the module against PyMC.
 
 Walks the PyTensor graph of `model.logp()` and writes the instruction file
-`crates/stanwasm-codegen/examples/tape_from_text.rs` replays. Everything
+`crates/tapewasm-codegen/examples/tape_from_text.rs` replays. Everything
 upstream of the value variables is evaluated once and carried as constants;
 everything downstream becomes tape nodes, one per scalar element.
 
@@ -699,9 +699,9 @@ MODELS = {
     "student_t": student_t,
 }
 
-# Only the offline artifact builder needs a stanwasm checkout — inside Pyodide
+# Only the offline artifact builder needs a tapewasm checkout — inside Pyodide
 # the emitter is the published wasm, so this must not fail on import.
-REPO = os.environ.get("STANWASM")
+REPO = os.environ.get("TAPEWASM")
 
 
 def jitter(ip, rng, scale):
@@ -722,7 +722,7 @@ def check(name, build):
     n_params = lower(model, path, trace_at, test_at)
 
     out = subprocess.run(
-        ["cargo", "run", "-q", "--release", "-p", "stanwasm-codegen",
+        ["cargo", "run", "-q", "--release", "-p", "tapewasm-codegen",
          "--example", "tape_from_text", "--", os.path.abspath(path)],
         cwd=REPO, capture_output=True, text=True,
     )

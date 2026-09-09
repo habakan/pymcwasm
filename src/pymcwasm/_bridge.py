@@ -1,7 +1,7 @@
-"""JS interop between Pyodide and the stanwasm wasm module.
+"""JS interop between Pyodide and the tapewasm wasm module.
 
 Nothing here computes anything. The PyTensor graph is lowered to a tape in
-Python (`pymcwasm.lowering`), stanwasm's own wasm module compiles that tape and
+Python (`pymcwasm.lowering`), tapewasm's own wasm module compiles that tape and
 runs nuts-rs over the result, and this only carries values across.
 
 `js` and `pyodide.code` are modules a Pyodide runtime provides rather than pip
@@ -11,41 +11,41 @@ actually reaches for the browser.
 
 The site-root detection in `pystanwasm` is fuller than this: it recognises
 JupyterLite, marimo and Quarto layouts. Here the path is given, or defaults to
-the same one pystanwasm uses.
+the shape those layouts serve a package from.
 """
 
-DEFAULT_STANWASM_PATH = "/files/stanwasm/pkg/stanwasm.js"
+DEFAULT_TAPEWASM_PATH = "/files/tapewasm/pkg/tapewasm.js"
 
 _loaded = {}
 
 
-async def load(stanwasm_path=DEFAULT_STANWASM_PATH):
-    """Import stanwasm's JS module once per path and initialise its wasm."""
-    if stanwasm_path in _loaded:
-        return _loaded[stanwasm_path]
+async def load(tapewasm_path=DEFAULT_TAPEWASM_PATH):
+    """Import tapewasm's JS module once per path and initialise its wasm."""
+    if tapewasm_path in _loaded:
+        return _loaded[tapewasm_path]
 
     from pyodide.code import run_js
 
     # `import()` inside run_js resolves against Pyodide's own module URL, which
     # is the CDN — so a page-relative path has to be made absolute first.
-    sw = await run_js(
+    tw = await run_js(
         f"""
         (async () => {{
             const base = globalThis.location ? globalThis.location.href : undefined;
-            const url = base ? new URL("{stanwasm_path}", base).href : "{stanwasm_path}";
+            const url = base ? new URL("{tapewasm_path}", base).href : "{tapewasm_path}";
             const m = await import(url);
             await m.default();
             return m;
         }})()
         """
     )
-    _loaded[stanwasm_path] = sw
-    return sw
+    _loaded[tapewasm_path] = tw
+    return tw
 
 
 # The emitted module imports these; only the ones a tape reaches are asked for,
 # but a module asks for what it asks for. lgamma/digamma/phi are the series
-# stanwasm's own tests use.
+# tapewasm's own tests use.
 _MATH_JS = """
 ({
   exp: Math.exp, log: Math.log, sin: Math.sin, cos: Math.cos, pow: Math.pow,
@@ -74,18 +74,18 @@ _MATH_JS = """
 """
 
 
-async def compile(tape, stanwasm_path=DEFAULT_STANWASM_PATH):
+async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH):
     """Turn a tape into a bound module. Returns a JS handle and what it took."""
     from pyodide.code import run_js
 
-    sw = await load(stanwasm_path)
+    tw = await load(tapewasm_path)
     build = run_js(
         """
-        (async (sw, tape, mathSrc) => {
+        (async (tw, tape, mathSrc) => {
             const t0 = performance.now();
-            const built = sw.compileTape(tape);
+            const built = tw.compileTape(tape);
             const aot = await WebAssembly.instantiate(built.wasm, {
-                stan: { memory: sw.sharedMemory() },
+                tapewasm: { memory: tw.sharedMemory() },
                 Math: eval(mathSrc),
             });
             return { built, exports: aot.instance.exports,
@@ -93,10 +93,10 @@ async def compile(tape, stanwasm_path=DEFAULT_STANWASM_PATH):
         })
         """
     )
-    return await build(sw, tape, _MATH_JS), sw
+    return await build(tw, tape, _MATH_JS), tw
 
 
-async def draw(handle, sw, init, warmup, draws, seed, param_names):
+async def draw(handle, tw, init, warmup, draws, seed, param_names):
     """Sample a module compiled earlier.
 
     `setAotExports` binds one module per page, so this re-binds before every
@@ -107,9 +107,9 @@ async def draw(handle, sw, init, warmup, draws, seed, param_names):
 
     sampler = run_js(
         """
-        ((sw, h, init, warmup, draws, seed, names) => {
-            sw.setAotExports(h.exports);
-            const s = new sw.AotSampler(
+        ((tw, h, init, warmup, draws, seed, names) => {
+            tw.setAotExports(h.exports);
+            const s = new tw.AotSampler(
                 h.built.nParams, h.built.scratchInit, h.built.layoutId, names,
             );
             const t0 = performance.now();
@@ -120,5 +120,5 @@ async def draw(handle, sw, init, warmup, draws, seed, param_names):
         """
     )
     return sampler(
-        sw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
+        tw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
     ).to_py()

@@ -1,7 +1,7 @@
 name: pages
 
 # Both examples are static, so this assembles a directory rather than building
-# anything: the repository as it stands, plus the published `stanwasm` package
+# anything: the repository as it stands, plus the published `tapewasm` package
 # copied to the path the pages fetch it from.
 #
 # Needs the repository to be public, or a plan that allows Pages on a private
@@ -45,7 +45,7 @@ jobs:
           mkdir -p site
           cp -r examples artifacts site/
           mkdir -p site/pkg && cp -r src/pymcwasm site/pkg/
-          mkdir -p site/vendor && cp -r node_modules/stanwasm/* site/vendor/
+          mkdir -p site/vendor && cp -r node_modules/tapewasm/* site/vendor/
           cp index.html site/
 
       - uses: actions/upload-pages-artifact@v4
