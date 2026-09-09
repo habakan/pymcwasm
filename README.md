@@ -4,6 +4,9 @@ Sample a PyMC model in a browser. The log density is compiled to a WebAssembly
 module and drawn from by [nuts-rs](https://github.com/pymc-devs/nuts-rs); no
 server does the sampling.
 
+**[habakan.github.io/pymcwasm](https://habakan.github.io/pymcwasm/)** — both
+ways in, running.
+
 ![demo](demo.gif)
 
 *Editing a PyMC model in the page, compiling it, and drawing from it. The second
