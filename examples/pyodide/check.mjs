@@ -12,15 +12,15 @@ page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 
 await page.goto(`http://127.0.0.1:${PORT}/examples/pyodide/`);
-await page.waitForFunction(() => !document.getElementById("go").disabled,
+await page.waitForFunction(() => !document.getElementById("compile").disabled,
   null, { timeout: 300_000 });
 console.log("page ready:", await page.textContent("#status"));
 
-await page.click("#go");
+await page.click("#compile");
 await page.waitForFunction(() => window.done || window.failed, null, { timeout: 300_000 });
 
 const failed = await page.evaluate(() => window.failed);
-const out = await page.textContent("#out");
+const out = await page.textContent("#cost");
 const status = await page.textContent("#status");
 await browser.close();
 server.close();

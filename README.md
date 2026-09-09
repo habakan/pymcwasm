@@ -41,6 +41,37 @@ npm start        # then open /
 npm test         # the same seven models in three engines, checked against nutpie
 ```
 
+What a page does with one, in full:
+
+```js
+import init, { AotSampler, setAotExports, sharedMemory } from "stanwasm";
+
+await init();
+const meta = await (await fetch("/artifacts/eight_schools/meta.json")).json();
+const bytes = await (await fetch("/artifacts/eight_schools/model.wasm")).arrayBuffer();
+
+// The module imports its own arithmetic. `examples/browser/app.js` carries the
+// series for lgamma, digamma and Phi; a model that reaches none of them can
+// pass anything for those three.
+const aot = await WebAssembly.instantiate(bytes, {
+  stan: { memory: sharedMemory() },
+  Math: { exp: Math.exp, log: Math.log, pow: Math.pow, sin: Math.sin, cos: Math.cos,
+          tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
+          lgamma, digamma, phi },
+});
+setAotExports(aot.instance.exports);
+
+const sampler = new AotSampler(
+  meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames,
+);
+const flat = sampler.sample(new Float64Array(meta.initialPoint), 1000, 1000, 42n);
+```
+
+`flat` is draws-major and `meta.nParams` wide, warmup first. `meta` is what the
+build step recorded beside the module; `setAotExports` binds one module per
+page, and sampling with the wrong one bound is refused rather than mixed, by the
+layout id both sides carry.
+
 The module answers for exactly one model and one dataset — the data is compiled
 in — so changing either means building again. For a page whose model was decided
 when the page was written, that is the whole cost, and nothing has to load a

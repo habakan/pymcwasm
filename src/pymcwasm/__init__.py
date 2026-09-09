@@ -10,6 +10,12 @@ Inside Pyodide, all of that happens in the page.
     fit["beta"]      # one parameter's draws
     fit.summary()    # mean and sd per parameter
 
+Compiling is the slow half and does not depend on the draws, so it is worth
+keeping when a page samples the same model more than once:
+
+    compiled = await pymcwasm.compile(model)
+    fit = await compiled.sample(draws=2000, seed=7)
+
 Draws are in the space the sampler works in, so a transformed parameter comes
 back under its value-variable name (`sigma_log__`, not `sigma`).
 
@@ -22,9 +28,10 @@ Not affiliated with PyMC.
 import numpy as np
 
 from . import lowering
-from ._bridge import DEFAULT_STANWASM_PATH, compile_and_sample
+from . import _bridge
+from ._bridge import DEFAULT_STANWASM_PATH
 
-__all__ = ["Fit", "sample", "starting_point", "tape_for"]
+__all__ = ["Compiled", "Fit", "compile", "sample", "starting_point", "tape_for"]
 
 
 def starting_point(model, seed=0, tries=50):
@@ -78,11 +85,13 @@ def tape_for(model, point=None):
 class Fit:
     """Post-warmup draws, one column per unconstrained scalar."""
 
-    def __init__(self, names, draws, ms, module_bytes):
+    def __init__(self, names, draws, ms, module_bytes, compile_ms, lower_ms):
         self.names = list(names)
         self.draws = np.asarray(draws, dtype=float).reshape(-1, len(self.names))
         self.ms = ms
         self.module_bytes = module_bytes
+        self.compile_ms = compile_ms
+        self.lower_ms = lower_ms
 
     def __getitem__(self, name):
         return self.draws[:, self.names.index(name)]
@@ -100,21 +109,53 @@ class Fit:
         )
 
 
-async def sample(model, draws=1000, warmup=1000, seed=42, point=None,
-                 stanwasm_path=DEFAULT_STANWASM_PATH):
-    """Compile `model` in the page and draw from it.
+class Compiled:
+    """A model already lowered and emitted, ready to sample as often as wanted.
 
-    Every call compiles: the data is part of the tape, so a module answers for
-    one model and one dataset.
+    Compiling is the expensive half — the graph walk especially — and it does
+    not depend on the draws, so it is worth keeping.
     """
+
+    def __init__(self, handle, sw, names, init, lower_ms):
+        self._handle = handle
+        self._sw = sw
+        self.names = names
+        self.init = init
+        self.lower_ms = lower_ms
+        self.compile_ms = handle.ms
+        self.module_bytes = handle.bytes
+
+    async def sample(self, draws=1000, warmup=1000, seed=42):
+        got = await _bridge.draw(
+            self._handle, self._sw, self.init, warmup, draws, seed, self.names,
+        )
+        n = got["nParams"]
+        flat = np.asarray(got["draws"], dtype=float)
+        return Fit(self.names, flat[warmup * n:], got["ms"], self.module_bytes,
+                   self.compile_ms, self.lower_ms)
+
+
+async def compile(model, point=None, stanwasm_path=DEFAULT_STANWASM_PATH):
+    """Lower `model` and emit its module.
+
+    The data is part of the tape, so the result answers for one model and one
+    dataset — but for as many draws as asked for.
+    """
+    import time
+
+    t0 = time.perf_counter()
     tape, point = tape_for(model, point)
     names = param_names(model)
     init = np.concatenate(
         [np.asarray(point[v.name], dtype=float).ravel() for v in model.value_vars]
     )
-    got = await compile_and_sample(
-        tape, init, warmup, draws, seed, names, stanwasm_path,
-    )
-    n = got["nParams"]
-    flat = np.asarray(got["draws"], dtype=float)
-    return Fit(names, flat[warmup * n:], got["ms"], got["moduleBytes"])
+    lower_ms = (time.perf_counter() - t0) * 1000
+    handle, sw = await _bridge.compile(tape, stanwasm_path)
+    return Compiled(handle, sw, names, init, lower_ms)
+
+
+async def sample(model, draws=1000, warmup=1000, seed=42, point=None,
+                 stanwasm_path=DEFAULT_STANWASM_PATH):
+    """Compile `model` and draw from it, in one go."""
+    compiled = await compile(model, point, stanwasm_path)
+    return await compiled.sample(draws=draws, warmup=warmup, seed=seed)

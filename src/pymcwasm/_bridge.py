@@ -74,37 +74,51 @@ _MATH_JS = """
 """
 
 
-async def compile_and_sample(tape, init, warmup, draws, seed, param_names,
-                             stanwasm_path=DEFAULT_STANWASM_PATH):
-    """Compile a tape and draw from it. Returns a flat list, draws-major."""
+async def compile(tape, stanwasm_path=DEFAULT_STANWASM_PATH):
+    """Turn a tape into a bound module. Returns a JS handle and what it took."""
     from pyodide.code import run_js
 
     sw = await load(stanwasm_path)
-    run_js("globalThis.__pymcwasm = globalThis.__pymcwasm || {};")
-    run_js("globalThis.__pymcwasm.sw = null;")
-    # The module is handed straight back to JS rather than through Python, so
-    # the wasm bytes never cross the boundary twice.
-    sampler = run_js(
+    build = run_js(
         """
-        (async (sw, tape, init, warmup, draws, seed, names, mathSrc) => {
+        (async (sw, tape, mathSrc) => {
+            const t0 = performance.now();
             const built = sw.compileTape(tape);
             const aot = await WebAssembly.instantiate(built.wasm, {
                 stan: { memory: sw.sharedMemory() },
                 Math: eval(mathSrc),
             });
-            sw.setAotExports(aot.instance.exports);
+            return { built, exports: aot.instance.exports,
+                     ms: performance.now() - t0, bytes: built.wasm.length };
+        })
+        """
+    )
+    return await build(sw, tape, _MATH_JS), sw
+
+
+async def draw(handle, sw, init, warmup, draws, seed, param_names):
+    """Sample a module compiled earlier.
+
+    `setAotExports` binds one module per page, so this re-binds before every
+    run — two models compiled in one page would otherwise take each other's
+    buffers, which the layout id refuses rather than silently mixing.
+    """
+    from pyodide.code import run_js
+
+    sampler = run_js(
+        """
+        ((sw, h, init, warmup, draws, seed, names) => {
+            sw.setAotExports(h.exports);
             const s = new sw.AotSampler(
-                built.nParams, built.scratchInit, built.layoutId, names,
+                h.built.nParams, h.built.scratchInit, h.built.layoutId, names,
             );
             const t0 = performance.now();
             const flat = s.sample(new Float64Array(init), warmup, draws, BigInt(seed));
             return { draws: Array.from(flat), ms: performance.now() - t0,
-                     nParams: built.nParams, moduleBytes: built.wasm.length };
+                     nParams: h.built.nParams };
         })
         """
     )
-    result = await sampler(
-        sw, tape, list(init), int(warmup), int(draws), int(seed),
-        list(param_names), _MATH_JS,
-    )
-    return result.to_py()
+    return sampler(
+        sw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
+    ).to_py()

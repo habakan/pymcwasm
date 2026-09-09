@@ -2,50 +2,69 @@
 <meta charset="utf-8">
 <title>PyMC in the page, compiled in the page</title>
 <style>
+  :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --far:#c0392b; }
   body { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-         color: #1f2933; margin: 0; padding: 2.5rem 2rem; max-width: 60rem; }
+         color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 64rem; }
   h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
-  .sub { color: #62707c; margin: 0 0 1.4rem; max-width: 46rem; }
-  textarea { width: 100%; height: 15rem; font: inherit; padding: .7rem;
-             border: 1px solid #dde2e7; border-radius: 6px; box-sizing: border-box; }
-  button { font: inherit; padding: .4rem 1.2rem; margin: .8rem 0; border: 1px solid #1f2933;
-           border-radius: 4px; background: #1f2933; color: #fff; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  pre { background: #f6f8fa; border: 1px solid #dde2e7; border-radius: 6px;
-        padding: .8rem; overflow-x: auto; white-space: pre-wrap; }
-  #status { color: #62707c; }
+  .sub { color: var(--dim); margin: 0 0 1.4rem; max-width: 48rem; }
+  .bar { display: flex; gap: 1.1rem; align-items: flex-end; flex-wrap: wrap;
+         padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 6px;
+         margin: 1rem 0; }
+  label { display: block; font-size: 11px; color: var(--dim); margin-bottom: .2rem; }
+  select, input { font: inherit; padding: .2rem .35rem; border: 1px solid var(--line);
+                  border-radius: 4px; background: #fff; color: inherit; }
+  input { width: 5rem; }
+  button { font: inherit; padding: .35rem 1.1rem; border: 1px solid var(--ink);
+           border-radius: 4px; background: var(--ink); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost { background: #fff; color: var(--ink); }
+  textarea { width: 100%; height: 14rem; font: inherit; padding: .7rem;
+             border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; }
+  #cost { margin-left: auto; text-align: right; color: var(--dim); font-size: 12px; }
+  #cost b { color: var(--ink); font-size: 19px; font-weight: 600; }
+  .param { display: flex; gap: 1rem; align-items: center; padding: .3rem 0;
+           border-bottom: 1px solid var(--line); }
+  .name { width: 9rem; } .nums { width: 12rem; color: var(--dim); font-size: 12px; }
+  .nums b { color: var(--ink); font-weight: 600; }
+  #status { color: var(--dim); } .err { color: var(--far); white-space: pre-wrap; }
+  footer { margin-top: 2rem; color: var(--dim); font-size: 12px; }
 </style>
 
 <h1>A PyMC model written here, compiled here, sampled here</h1>
 <p class="sub">
-  PyMC runs in this page under Pyodide and builds the graph; the log density is
+  PyMC runs in this page under Pyodide and builds the graph. The log density is
   lowered to a tape, stanwasm's emitter turns that into a wasm module, and
-  nuts-rs samples it. Edit the model and press sample — nothing is precompiled
-  and no server is involved.
+  nuts-rs samples it — all in the tab. Nothing is precompiled and no server is
+  involved. Edit the model, or pick another, and compile it again.
 </p>
 
-<textarea id="src">
-import numpy as np, pymc as pm
+<div class="bar">
+  <div><label for="preset">start from</label><select id="preset"></select></div>
+  <div><label for="draws">draws</label><input id="draws" type="number" value="1000" min="100" step="100"></div>
+  <div><label for="warmup">warmup</label><input id="warmup" type="number" value="1000" min="100" step="100"></div>
+  <div><label for="seed">seed</label><input id="seed" type="number" value="42" min="1"></div>
+  <div><label>&nbsp;</label><button id="compile" disabled>compile</button></div>
+  <div><label>&nbsp;</label><button id="draw" class="ghost" disabled>sample again</button></div>
+  <div id="cost"></div>
+</div>
 
-rng = np.random.default_rng(0)
-x = rng.normal(size=40)
-y = 1.0 + 1.8 * x + rng.normal(scale=0.4, size=40)
-
-with pm.Model() as model:
-    alpha = pm.Normal("alpha", 0, 10)
-    beta = pm.Normal("beta", 0, 10)
-    sigma = pm.Exponential("sigma", 1)
-    pm.Normal("y", mu=alpha + beta * x, sigma=sigma, observed=y)
-</textarea>
-
-<div><button id="go" disabled>sample</button> <span id="status">loading Pyodide…</span></div>
-<pre id="out"></pre>
+<textarea id="src" spellcheck="false"></textarea>
+<p id="status">loading Pyodide…</p>
+<div id="out"></div>
+<footer id="foot"></footer>
 
 <script type="module">
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/pyodide.mjs";
+import { histogram, trace } from "./plot.js";
+import { PRESETS } from "./models.js";
 
 const $ = (id) => document.getElementById(id);
-const say = (s) => { $("status").textContent = s; };
+const say = (s) => { $("status").textContent = s; $("status").className = ""; };
+const fail = (s) => { $("status").textContent = s; $("status").className = "err"; };
+
+for (const k of Object.keys(PRESETS)) $("preset").add(new Option(k, k));
+$("src").value = PRESETS[$("preset").value];
+$("preset").addEventListener("change", () => { $("src").value = PRESETS[$("preset").value]; });
 
 const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/" });
 say("installing PyMC…");
@@ -54,8 +73,9 @@ const mp = py.pyimport("micropip");
 for (const p of ["filelock", "cachetools", "typing-extensions", "cloudpickle", "cons",
                  "logical-unification", "etuples", "miniKanren", "rich", "threadpoolctl",
                  "xarray", "arviz"]) { try { await mp.install(p); } catch {} }
-// numba is a declared dependency of both and has no wasm build; nothing on this
-// path calls it, so install around it and use the Python linker below.
+// numba is a declared dependency of both and has no wasm build. Nothing on this
+// path calls it — the graph is read, never compiled — so install around it and
+// use the Python linker below.
 for (const p of ["pytensor", "pymc"]) await mp.install.callKwargs(p, { deps: false });
 
 say("loading pymcwasm…");
@@ -71,33 +91,85 @@ pytensor.config.linker = "py"
 import pymcwasm
 `);
 
-say("ready");
-$("go").disabled = false;
+say("ready — press compile");
+$("compile").disabled = false;
 
-$("go").addEventListener("click", async () => {
-  $("go").disabled = true;
-  say("sampling…");
-  const t0 = performance.now();
+async function compile() {
+  $("compile").disabled = $("draw").disabled = true;
+  say("running your code, then lowering and emitting…");
   try {
     py.globals.set("user_source", $("src").value);
-    const text = await py.runPythonAsync(`
+    await py.runPythonAsync(`
 import pymcwasm
 ns = {}
 exec(user_source, ns)
-model = ns["model"]
-fit = await pymcwasm.sample(model, draws=1000, warmup=1000, seed=42,
-                            stanwasm_path="/vendor/pkg/stanwasm.js")
-str(fit) + chr(10) + chr(10) + str(fit.summary().round(4))
+compiled = await pymcwasm.compile(ns["model"], stanwasm_path="/vendor/pkg/stanwasm.js")
 `);
-    $("out").textContent = text;
-    say(`done in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
-    window.done = true;
+    $("draw").disabled = false;
+    await draw();
   } catch (e) {
-    $("out").textContent = String(e).split("\n").slice(-14).join("\n");
-    say("failed");
-    window.failed = String(e);
+    fail(String(e).split("\n").slice(-8).join("\n"));
   } finally {
-    $("go").disabled = false;
+    $("compile").disabled = false;
   }
-});
+}
+
+async function draw() {
+  $("compile").disabled = $("draw").disabled = true;
+  say("sampling…");
+  try {
+    py.globals.set("opts", py.toPy({
+      draws: Number($("draws").value),
+      warmup: Number($("warmup").value),
+      seed: Number($("seed").value),
+    }));
+    const fit = await py.runPythonAsync(`
+fit = await compiled.sample(**{k: int(v) for k, v in opts.items()})
+{"names": fit.names, "draws": fit.draws.ravel().tolist(), "n": len(fit.names),
+ "sample_ms": fit.ms, "compile_ms": fit.compile_ms, "lower_ms": fit.lower_ms,
+ "bytes": fit.module_bytes}
+`);
+    render(fit.toJs({ dict_converter: Object.fromEntries }));
+    say("done");
+  } catch (e) {
+    fail(String(e).split("\n").slice(-8).join("\n"));
+  } finally {
+    $("compile").disabled = $("draw").disabled = false;
+  }
+}
+
+function render(f) {
+  $("cost").innerHTML =
+    `<b>${f.sample_ms.toFixed(0)} ms</b> to sample<br>` +
+    `${(f.lower_ms / 1000).toFixed(1)} s lowering · ${f.compile_ms.toFixed(0)} ms emitting` +
+    `<br>${(f.bytes / 1024).toFixed(1)} KB module`;
+
+  const out = $("out");
+  out.textContent = "";
+  const rows = f.draws.length / f.n;
+  f.names.forEach((label, k) => {
+    const col = new Float64Array(rows);
+    for (let i = 0; i < rows; i++) col[i] = f.draws[i * f.n + k];
+    let mean = 0;
+    for (const v of col) mean += v / rows;
+    let sd = 0;
+    for (const v of col) sd += (v - mean) ** 2 / rows;
+
+    const row = document.createElement("div");
+    row.className = "param";
+    row.innerHTML = `<div class="name">${label}</div>` +
+      `<div class="nums">mean <b>${mean.toFixed(3)}</b> · sd ${Math.sqrt(sd).toFixed(3)}</div>`;
+    const h = document.createElement("canvas");
+    const t = document.createElement("canvas");
+    row.append(h, t);
+    out.append(row);
+    histogram(h, col);
+    trace(t, col);
+  });
+  window.done = true;
+}
+
+$("compile").addEventListener("click", compile);
+$("draw").addEventListener("click", draw);
+$("foot").textContent = navigator.userAgent;
 </script>
