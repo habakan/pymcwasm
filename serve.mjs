@@ -37,7 +37,7 @@ export const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x").pathname;
   // A directory URL means its index, and bare "/" means the first example.
   const path = url === "/"
-    ? "/examples/index.html"
+    ? "/index.html"
     : url.endsWith("/") ? `${url}index.html` : url;
   try {
     const body = await readFile(locate(path));

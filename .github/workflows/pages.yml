@@ -11,6 +11,7 @@ on:
     branches: [main]
     paths:
       - "examples/**"
+      - "index.html"
       - "src/**"
       - "artifacts/**"
       - "package.json"
@@ -45,7 +46,7 @@ jobs:
           cp -r examples artifacts site/
           mkdir -p site/pkg && cp -r src/pymcwasm site/pkg/
           mkdir -p site/vendor && cp -r node_modules/stanwasm/* site/vendor/
-          cp examples/index.html site/index.html
+          cp index.html site/
 
       - uses: actions/upload-pages-artifact@v4
         with:
