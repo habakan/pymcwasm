@@ -4,8 +4,23 @@ Sample a PyMC model in a browser. The log density is compiled to a WebAssembly
 module and drawn from by [nuts-rs](https://github.com/pymc-devs/nuts-rs); no
 server does the sampling.
 
-There are two ways in, and they are different trades rather than one being the
-real one.
+There are two ways in. They are different trades, not a real one and a
+shortcut, and the engine underneath is the same either way.
+
+| | **in the page** | **compiled beforehand** |
+| --- | --- | --- |
+| the model is written | in Python, in the page | in Python, on your machine |
+| the browser loads | Pyodide, PyMC, and a sampler | one module and a sampler |
+| that costs | tens of megabytes, tens of seconds | tens of kilobytes |
+| model and data | anything, changed and recompiled live | fixed when the page was built |
+| suits | a notebook, a teaching page where the reader edits the model | a post or a document with one model in it |
+| here | `examples/pyodide/` | `examples/browser/` |
+
+The same two shapes exist for Stan, against the same engine:
+[stanwasm](https://github.com/habakan/stanwasm)'s own gallery compiles Stan
+source in the page from JavaScript, and
+[pystanwasm](https://github.com/habakan/pystanwasm) drives it from Python under
+Pyodide. What this repository adds is a PyMC front end for both.
 
 ## Write the model in the page
 
@@ -41,7 +56,35 @@ npm start        # then open /
 npm test         # the same seven models in three engines, checked against nutpie
 ```
 
-What a page does with one, in full:
+### What a build step produces
+
+Compiling a model writes three files into `artifacts/<model>/`. Together they
+are everything a page needs; there is no other state.
+
+| | |
+| --- | --- |
+| `model.wasm` | the module. Exports `log_prob_grad`, imports linear memory and its own arithmetic. |
+| `meta.json` | the numbers that go with it — see below. |
+| `reference.json` | nutpie's posterior for the same model, so the page can check itself. Not needed to sample. |
+
+`meta.json` holds four things the module cannot carry itself:
+
+- **`nParams`** — how wide a draw is.
+- **`scratchInit`** — the buffer the module works in. Two slots per tape node
+  for values and derivatives, with the constants a re-rolled loop reads at the
+  end. The host owns it; the module only writes into it.
+- **`layoutId`** — a hash of the graph, the parameter count and those
+  constants, exported from the module as well. A page binds one module at a
+  time, and a buffer sized for one model handed to another would write at
+  offsets it was never sized for, so the two ids are compared before the first
+  call rather than after the draws come out wrong.
+- **`paramNames`** and **`initialPoint`** — what the columns are called, and a
+  starting point the sampler accepts.
+
+Building one needs Python, PyMC and a stanwasm checkout — `build/README.md` —
+which is why these are committed. Reading one needs nothing.
+
+### What a page does with one, in full
 
 ```js
 import init, { AotSampler, setAotExports, sharedMemory } from "stanwasm";
@@ -106,8 +149,8 @@ gets used is the emitter and the sampler.
 
 ```
 src/pymcwasm/      the package a Pyodide page imports, and the lowering
-build/             the offline artifact builder (needs a stanwasm checkout)
-artifacts/         seven models, compiled
+build/             turns a model into an artifact (needs a stanwasm checkout)
+artifacts/         seven of them, committed
 examples/browser/  the precompiled path
 examples/pyodide/  the in-page path
 ```
