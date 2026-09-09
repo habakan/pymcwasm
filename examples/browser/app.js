@@ -46,11 +46,12 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = 
   for (let i = 0; i < draws; i++) {
     for (let k = 0; k < n; k++) mean[k] += post[i * n + k] / draws;
   }
-  return { meta, mean, ms, moduleBytes: bytes.byteLength };
+  // `post` is a view into wasm memory; the caller keeps it, so hand over a copy.
+  return { meta, mean, draws: post.slice(), nDraws: draws, ms, moduleBytes: bytes.byteLength };
 }
 
 export async function compare(name, options) {
-  const { meta, mean, ms, moduleBytes } = await sample(name, options);
+  const { meta, mean, draws, nDraws, ms, moduleBytes } = await sample(name, options);
   const reference = await (await fetch(`/artifacts/${name}/reference.json`)).json();
   const rows = meta.paramNames.map((label, k) => {
     const ref = reference[label];
@@ -59,5 +60,8 @@ export async function compare(name, options) {
       gap: Math.abs(mean[k] - ref.mean) / Math.max(ref.sd, 1e-12),
     };
   });
-  return { name, ms, moduleBytes, rows, worst: Math.max(...rows.map((r) => r.gap)) };
+  return {
+    name, ms, moduleBytes, rows, draws, nDraws, meta,
+    worst: Math.max(...rows.map((r) => r.gap)),
+  };
 }

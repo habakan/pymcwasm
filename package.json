@@ -1,11 +1,12 @@
 {
-  "name": "pymc-wasm-spike",
+  "name": "pymcwasm",
   "private": true,
   "type": "module",
-  "description": "A PyMC model compiled ahead of time and sampled in a browser.",
+  "description": "PyMC models compiled to WebAssembly and sampled in a browser.",
   "scripts": {
     "start": "node serve.mjs",
-    "test": "node check.mjs"
+    "test": "node examples/browser/check.mjs",
+    "test:pyodide": "node examples/pyodide/check.mjs"
   },
   "dependencies": {
     "stanwasm": "^0.5.0"

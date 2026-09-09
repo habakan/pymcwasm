@@ -2,7 +2,7 @@
 // are installed, and fails if any posterior has drifted from nutpie's.
 
 import { chromium, firefox, webkit } from "playwright";
-import { server } from "./serve.mjs";
+import { server } from "../../serve.mjs";
 
 const PORT = Number(process.env.PORT ?? 8140);
 const wanted = (process.env.BROWSERS ?? "chromium,firefox,webkit").split(",");
@@ -26,7 +26,7 @@ for (const name of wanted) {
   await page.goto(`http://127.0.0.1:${PORT}/`);
 
   const results = await page.evaluate(async () => {
-    const { MODELS, compare } = await import("/demo/app.js");
+    const { MODELS, compare } = await import("/examples/browser/app.js");
     const out = [];
     for (const m of MODELS) out.push(await compare(m));
     return out;

@@ -1,36 +1,51 @@
-// Static files only. A page that samples a precompiled model needs no more than
-// this, which is the point.
+// Static files for the page: the artifacts, this directory, and the published
+// `stanwasm` package straight out of node_modules. No bundler — what the page
+// loads is what npm published.
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const repo = dirname(fileURLToPath(import.meta.url));
 const types = {
   ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
   ".wasm": "application/wasm", ".json": "application/json",
 };
 const port = Number(process.env.PORT ?? 8140);
 
+// `/vendor` is the published stanwasm package, `/pkg` the Python sources a
+// Pyodide page installs, and everything else is a file in the repository.
+//
+// `STANWASM=<checkout>` serves that checkout's `ts/` instead, which the Pyodide
+// example needs until `compileTape` reaches npm — 0.5.0 does not have it.
+const vendor = process.env.STANWASM
+  ? resolve(process.env.STANWASM, "ts")
+  : resolve(repo, "node_modules/stanwasm");
+
+function locate(path) {
+  if (path.startsWith("/vendor/")) {
+    return resolve(vendor, "." + path.slice("/vendor".length));
+  }
+  if (path.startsWith("/pkg/")) {
+    return resolve(repo, "src", "." + path.slice("/pkg".length));
+  }
+  return resolve(repo, "." + path);
+}
+
 export const server = createServer(async (req, res) => {
-  const path = new URL(req.url, "http://x").pathname;
-  const file = path === "/" ? "/demo/index.html" : path;
-  // `stanwasm` is served straight out of node_modules: no bundler, so what the
-  // page loads is the published package.
-  const root = file.startsWith("/vendor/")
-    ? resolve(here, "node_modules/stanwasm")
-    : here;
-  const rel = file.startsWith("/vendor/") ? file.slice("/vendor".length) : file;
+  const url = new URL(req.url, "http://x").pathname;
+  // A directory URL means its index, and bare "/" means the first example.
+  const path = url === "/"
+    ? "/examples/browser/index.html"
+    : url.endsWith("/") ? `${url}index.html` : url;
   try {
-    const body = await readFile(resolve(root, "." + rel));
-    res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream" });
+    const body = await readFile(locate(path));
+    res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream" });
     res.end(body);
   } catch {
     res.writeHead(404).end("not found");
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`http://127.0.0.1:${port}/`);
-});
+server.listen(port, "127.0.0.1", () => console.log(`http://127.0.0.1:${port}/`));

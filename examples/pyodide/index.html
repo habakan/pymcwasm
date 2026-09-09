@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PyMC in the page, compiled in the page</title>
+<style>
+  body { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+         color: #1f2933; margin: 0; padding: 2.5rem 2rem; max-width: 60rem; }
+  h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  .sub { color: #62707c; margin: 0 0 1.4rem; max-width: 46rem; }
+  textarea { width: 100%; height: 15rem; font: inherit; padding: .7rem;
+             border: 1px solid #dde2e7; border-radius: 6px; box-sizing: border-box; }
+  button { font: inherit; padding: .4rem 1.2rem; margin: .8rem 0; border: 1px solid #1f2933;
+           border-radius: 4px; background: #1f2933; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { background: #f6f8fa; border: 1px solid #dde2e7; border-radius: 6px;
+        padding: .8rem; overflow-x: auto; white-space: pre-wrap; }
+  #status { color: #62707c; }
+</style>
+
+<h1>A PyMC model written here, compiled here, sampled here</h1>
+<p class="sub">
+  PyMC runs in this page under Pyodide and builds the graph; the log density is
+  lowered to a tape, stanwasm's emitter turns that into a wasm module, and
+  nuts-rs samples it. Edit the model and press sample — nothing is precompiled
+  and no server is involved.
+</p>
+
+<textarea id="src">
+import numpy as np, pymc as pm
+
+rng = np.random.default_rng(0)
+x = rng.normal(size=40)
+y = 1.0 + 1.8 * x + rng.normal(scale=0.4, size=40)
+
+with pm.Model() as model:
+    alpha = pm.Normal("alpha", 0, 10)
+    beta = pm.Normal("beta", 0, 10)
+    sigma = pm.Exponential("sigma", 1)
+    pm.Normal("y", mu=alpha + beta * x, sigma=sigma, observed=y)
+</textarea>
+
+<div><button id="go" disabled>sample</button> <span id="status">loading Pyodide…</span></div>
+<pre id="out"></pre>
+
+<script type="module">
+import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/pyodide.mjs";
+
+const $ = (id) => document.getElementById(id);
+const say = (s) => { $("status").textContent = s; };
+
+const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/" });
+say("installing PyMC…");
+await py.loadPackage(["micropip", "numpy", "scipy", "pandas", "setuptools"]);
+const mp = py.pyimport("micropip");
+for (const p of ["filelock", "cachetools", "typing-extensions", "cloudpickle", "cons",
+                 "logical-unification", "etuples", "miniKanren", "rich", "threadpoolctl",
+                 "xarray", "arviz"]) { try { await mp.install(p); } catch {} }
+// numba is a declared dependency of both and has no wasm build; nothing on this
+// path calls it, so install around it and use the Python linker below.
+for (const p of ["pytensor", "pymc"]) await mp.install.callKwargs(p, { deps: false });
+
+say("loading pymcwasm…");
+py.FS.mkdirTree("/pkg/pymcwasm");
+for (const f of ["__init__.py", "_bridge.py", "lowering.py"]) {
+  py.FS.writeFile(`/pkg/pymcwasm/${f}`, await (await fetch(`/pkg/pymcwasm/${f}`)).text());
+}
+await py.runPythonAsync(`
+import sys; sys.path.insert(0, "/pkg")
+import pytensor
+pytensor.config.mode = "FAST_COMPILE"
+pytensor.config.linker = "py"
+import pymcwasm
+`);
+
+say("ready");
+$("go").disabled = false;
+
+$("go").addEventListener("click", async () => {
+  $("go").disabled = true;
+  say("sampling…");
+  const t0 = performance.now();
+  try {
+    py.globals.set("user_source", $("src").value);
+    const text = await py.runPythonAsync(`
+import pymcwasm
+ns = {}
+exec(user_source, ns)
+model = ns["model"]
+fit = await pymcwasm.sample(model, draws=1000, warmup=1000, seed=42,
+                            stanwasm_path="/vendor/pkg/stanwasm.js")
+str(fit) + chr(10) + chr(10) + str(fit.summary().round(4))
+`);
+    $("out").textContent = text;
+    say(`done in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+    window.done = true;
+  } catch (e) {
+    $("out").textContent = String(e).split("\n").slice(-14).join("\n");
+    say("failed");
+    window.failed = String(e);
+  } finally {
+    $("go").disabled = false;
+  }
+});
+</script>

@@ -1,74 +1,85 @@
-# PyMC in a browser, with no Python in the browser
+# pymcwasm
 
-Seven PyMC models, each compiled ahead of time into a self-contained wasm module
-and sampled in the page by nuts-rs. Nothing Python-shaped is shipped: no
-Pyodide, no Xeus, no Numba, no runtime compilation. A page loads a module, a
-sampler, and starts drawing.
+Sample a PyMC model in a browser. The log density is compiled to a WebAssembly
+module and drawn from by [nuts-rs](https://github.com/pymc-devs/nuts-rs); no
+server does the sampling.
+
+There are two ways in, and they are different trades rather than one being the
+real one.
+
+## Write the model in the page
+
+PyMC runs under Pyodide, builds the graph, and everything after that happens in
+the page too: the log density is lowered to a tape, stanwasm's emitter turns
+that into a wasm module, and nuts-rs samples it. The model and its data are
+whatever you typed.
+
+```python
+import pymcwasm
+
+fit = await pymcwasm.sample(model, draws=1000, warmup=1000, seed=42)
+fit["beta"]      # one parameter's draws
+fit.summary()    # mean and sd per parameter
+```
 
 ```
 npm install
-npm start        # http://127.0.0.1:8140/
+STANWASM=/path/to/stanwasm npm start      # then open /examples/pyodide/
 ```
 
-That is the whole thing to look at — the page samples all seven and prints each
-posterior beside what nutpie got for the same model.
+Costs a Pyodide runtime and a PyMC install on first load — tens of megabytes,
+tens of seconds. Compiling a small model then takes about a second, and drawing
+1000 times takes about ten milliseconds.
+
+## Compile it beforehand and ship the module
+
+Nothing Python-shaped reaches the browser. A build step turns a model into a
+5–35 KB wasm module, and the page loads that and a sampler.
 
 ```
-npx playwright install chromium firefox webkit
-npm test         # the same, in three engines, as a pass/fail
+npm start        # then open /
+npm test         # the same seven models in three engines, checked against nutpie
 ```
 
-## The tradeoff
-
-Everything is decided before the page loads. The log density *and its data* are
-compiled into the module, so:
-
-- there is no Python and no compiler in the browser, and nothing to wait for.
-  The modules here are 4.7-34 KB; the sampler beside them is the published
-  `stanwasm` package, 735 KB, of which about a fifth is what this uses — the
-  rest is a Stan front end the page never reaches, and building the crate
-  without it gives 164 KB. That build is not published, so the demo loads the
-  whole thing;
-- and the module answers for exactly one model and one dataset. Changing either
-  means compiling again, elsewhere.
-
-That is the opposite end of the trade from running PyMC itself in the browser,
-which keeps every model and every dataset available at the cost of carrying a
-Python runtime and compiling on arrival. Neither is better; they are for
-different pages. This repository exists because the first end had not been
-tried.
-
-Prior art on the other end, from PyMC's own developers:
-[nutpie#345](https://github.com/pymc-devs/nutpie/pull/345),
-[Running PyMC in the browser with PyScript](https://discourse.pymc.io/t/running-pymc-in-the-browser-with-pyscript/9432).
+The module answers for exactly one model and one dataset — the data is compiled
+in — so changing either means building again. For a page whose model was decided
+when the page was written, that is the whole cost, and nothing has to load a
+Python runtime to read it.
 
 ## Is it right?
 
-Each model is checked twice.
+Every model is checked twice.
 
 **The gradient**, against `model.compile_dlogp()`, at a point other than the one
-it was lowered at — so a subgraph wrongly frozen into a constant shows up
-instead of cancelling. The worst of the seven is 2.5e-15 relative.
+it was lowered at, so a subgraph wrongly frozen into a constant shows up instead
+of cancelling. The worst of the seven is 2.5e-15 relative.
 
 **The posterior**, against `nutpie.compile_pymc_model` on the same model, in the
-unconstrained space so transformed parameters are checked too rather than
-skipped. The furthest any parameter's mean sits from nutpie's is 0.25 sd, which
-is Monte Carlo noise between two samplers that took different trajectories.
+unconstrained space so transformed parameters are checked rather than skipped.
+The furthest any parameter's mean sits from nutpie's is about 0.25 sd, which is
+Monte Carlo noise between two samplers that took different trajectories.
 
-Not a speed claim. A wasm module has no business beating numba, and none of
-these numbers are a comparison of anything but correctness.
+Not a speed claim, in either direction.
 
 ## How it works
 
-`build/lower_pytensor.py` walks the PyTensor graph of `model.logp()` and writes
+`src/pymcwasm/lowering.py` walks the PyTensor graph of `model.logp()` and writes
 it as instructions for the autodiff tape in
 [stanwasm](https://github.com/habakan/stanwasm) — a Stan implementation, whose
-emitter turns a recorded tape into a standalone wasm module and whose
-`AotSampler` runs nuts-rs against one. Neither half knows any Stan is involved;
-the tape and the module ABI are all they share.
+emitter turns a tape into a standalone wasm module and whose `AotSampler` runs
+nuts-rs against one. Neither half of stanwasm knows Stan is not involved here:
+the tape and the module ABI are all that is shared.
 
-PyMC does not need the autodiff. PyTensor differentiates its own graph, and what
-gets used here is the emitter and the sampler.
+PyMC does not need the autodiff. PyTensor differentiates its own graph; what
+gets used is the emitter and the sampler.
+
+```
+src/pymcwasm/      the package a Pyodide page imports, and the lowering
+build/             the offline artifact builder (needs a stanwasm checkout)
+artifacts/         seven models, compiled
+examples/browser/  the precompiled path
+examples/pyodide/  the in-page path
+```
 
 ## What it cannot do
 
@@ -76,24 +87,27 @@ gets used here is the emitter and the sampler.
   any of the nine logp graphs surveyed, but it will.
 - **A `Switch` on a parameter is refused** rather than resolved while tracing,
   which rules out truncated and censored likelihoods.
-- **A Gaussian process is untried.** Its `Cholesky` is of a covariance built
-  from the parameters, so it lowers to a cubic number of tape nodes in the
-  number of points. Nothing is known to be wrong with it.
+- **A Gaussian process is untried.** Its `Cholesky` is of a covariance built from
+  the parameters, so it lowers to a cubic number of tape nodes in the number of
+  points. Nothing is known to be wrong with it.
 - **The starting point has to be searched for.** nuts-rs refuses a start whose
-  gradient has a zero component, and PyMC's `initial_point()` is zeros — at
-  which a centred hierarchical model has an exactly zero gradient in its
-  population mean, and so does a logit regression on balanced data.
+  gradient has a zero component, and PyMC's `initial_point()` is zeros — at which
+  a centred hierarchical model has an exactly zero gradient in its population
+  mean, and so does a logit regression on balanced data. `pymcwasm.sample` looks
+  for one; a caller supplying its own has to as well.
+- **Continuous parameters only**, and no prior or posterior predictive, and no
+  `InferenceData`.
 
-## Models
+## Requires an unreleased stanwasm
 
-`linear_regression`, `logistic`, `eight_schools` (centred),
-`varying_intercepts`, `matrix_regression`, `student_t`, `lkj_mvnormal`. Defined
-in `build/lower_pytensor.py`; `build/README.md` says how to regenerate an
-artifact.
+`compileTape`, which the in-page path needs, is merged but not published: npm
+`stanwasm@0.5.0` does not have it. Until it ships, serve a checkout with
+`STANWASM=/path/to/stanwasm npm start`. The precompiled path works against 0.5.0
+as published.
 
 ## Status
 
-A spike, three days old, by someone who does not work on PyMC. It answers
-whether the thing runs, not whether it should exist. Take it or leave it.
+An experiment. It answers whether the thing runs, not whether it should exist.
+Not affiliated with PyMC.
 
 Apache-2.0.

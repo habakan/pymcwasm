@@ -699,12 +699,9 @@ MODELS = {
     "student_t": student_t,
 }
 
-# The emitter is a cargo example in the stanwasm checkout: this step needs Rust
-# and that repository, which is why the artifacts are committed and the demo
-# does not.
+# Only the offline artifact builder needs a stanwasm checkout — inside Pyodide
+# the emitter is the published wasm, so this must not fail on import.
 REPO = os.environ.get("STANWASM")
-if not REPO:
-    raise SystemExit("set STANWASM to a checkout of github.com/habakan/stanwasm")
 
 
 def jitter(ip, rng, scale):

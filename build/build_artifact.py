@@ -7,8 +7,8 @@ Writes into <out>/:
     meta.json       what `new AotSampler(...)` takes, plus the point to start from
     reference.json  nutpie's posterior mean and sd per parameter, for comparison
 
-    uv run --with pymc --with scipy --with nutpie \\
-        python docs/internal/pymc-front-end/build_artifact.py <model> <out dir>
+    STANWASM=/path/to/stanwasm uv run --with pymc --with scipy --with nutpie \\
+        python build/build_artifact.py <model> artifacts/<model>
 """
 
 import json
@@ -20,7 +20,8 @@ import numpy as np
 import nutpie
 import pymc as pm
 
-from lower_pytensor import MODELS, REPO, lower
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from pymcwasm.lowering import MODELS, REPO, lower
 
 
 def compile_tape(tape_path, wasm_path):
