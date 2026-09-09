@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a PyMC model, sampled here</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; max-width: 46rem; }
+  h1 { font-size: 1.1rem; }
+  table { border-collapse: collapse; margin: 0.5rem 0 1.5rem; }
+  td, th { padding: 0.15rem 0.9rem 0.15rem 0; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .far { color: #b00; }
+  p { color: #555; }
+</style>
+<h1>a PyMC model, compiled ahead of time, sampled in this browser</h1>
+<p>No server did the sampling and no Python ran here. Each model is a wasm module
+built from a PyMC log density; the numbers on the right are what nutpie got for
+the same model, in the same unconstrained space.</p>
+<div id="out">sampling…</div>
+<script type="module">
+import { MODELS, compare } from "./app.js";
+
+const out = document.getElementById("out");
+out.textContent = "";
+for (const name of MODELS) {
+  const r = await compare(name);
+  const rows = r.rows.map((x) => `<tr><td>${x.label}</td><td>${x.ours.toFixed(4)}</td>` +
+    `<td>${x.theirs.toFixed(4)}</td><td class="${x.gap > 0.3 ? "far" : ""}">` +
+    `${x.gap.toFixed(3)} sd</td></tr>`).join("");
+  out.insertAdjacentHTML("beforeend",
+    `<h2 style="font-size:1rem">${r.name}</h2>` +
+    `<p>${(r.moduleBytes / 1024).toFixed(1)} KB module, 1000 draws in ${r.ms.toFixed(0)} ms</p>` +
+    `<table><tr><th>parameter</th><th>here</th><th>nutpie</th><th>apart</th></tr>${rows}</table>`);
+}
+window.done = true;
+</script>

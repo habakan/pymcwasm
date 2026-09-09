@@ -1,0 +1,16 @@
+{
+  "name": "pymc-wasm-spike",
+  "private": true,
+  "type": "module",
+  "description": "A PyMC model compiled ahead of time and sampled in a browser.",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node check.mjs"
+  },
+  "dependencies": {
+    "stanwasm": "^0.5.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}
