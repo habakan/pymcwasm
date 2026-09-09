@@ -24,7 +24,7 @@ fit.summary()    # mean and sd per parameter
 
 ```
 npm install
-STANWASM=/path/to/stanwasm npm start      # then open /examples/pyodide/
+npm start        # then open /examples/pyodide/
 ```
 
 Costs a Pyodide runtime and a PyMC install on first load — tens of megabytes,
@@ -97,13 +97,6 @@ examples/pyodide/  the in-page path
   for one; a caller supplying its own has to as well.
 - **Continuous parameters only**, and no prior or posterior predictive, and no
   `InferenceData`.
-
-## Requires an unreleased stanwasm
-
-`compileTape`, which the in-page path needs, is merged but not published: npm
-`stanwasm@0.5.0` does not have it. Until it ships, serve a checkout with
-`STANWASM=/path/to/stanwasm npm start`. The precompiled path works against 0.5.0
-as published.
 
 ## Status
 

@@ -9,7 +9,7 @@
     "test:pyodide": "node examples/pyodide/check.mjs"
   },
   "dependencies": {
-    "stanwasm": "^0.5.0"
+    "stanwasm": "^0.6.0"
   },
   "devDependencies": {
     "playwright": "^1.56.0"

@@ -17,8 +17,8 @@ const port = Number(process.env.PORT ?? 8140);
 // `/vendor` is the published stanwasm package, `/pkg` the Python sources a
 // Pyodide page installs, and everything else is a file in the repository.
 //
-// `STANWASM=<checkout>` serves that checkout's `ts/` instead, which the Pyodide
-// example needs until `compileTape` reaches npm — 0.5.0 does not have it.
+// `STANWASM=<checkout>` serves that checkout's `ts/` instead, for trying a
+// change before it is published.
 const vendor = process.env.STANWASM
   ? resolve(process.env.STANWASM, "ts")
   : resolve(repo, "node_modules/stanwasm");
