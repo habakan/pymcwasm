@@ -1,2 +1,7 @@
 node_modules
 demo.webm
+
+# Build intermediates: the tape the emitter reads, and uv's resolution of the
+# `--with` list. The artifact is the three files beside them.
+artifacts/*/model.tape
+uv.lock

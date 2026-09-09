@@ -1,5 +1,5 @@
 // Static files for the page: the artifacts, this directory, and the published
-// `stanwasm` package straight out of node_modules. No bundler — what the page
+// `tapewasm` package straight out of node_modules. No bundler — what the page
 // loads is what npm published.
 
 import { createServer } from "node:http";
@@ -14,14 +14,14 @@ const types = {
 };
 const port = Number(process.env.PORT ?? 8140);
 
-// `/vendor` is the published stanwasm package, `/pkg` the Python sources a
+// `/vendor` is the published tapewasm package, `/pkg` the Python sources a
 // Pyodide page installs, and everything else is a file in the repository.
 //
 // `STANWASM=<checkout>` serves that checkout's `ts/` instead, for trying a
 // change before it is published.
 const vendor = process.env.STANWASM
   ? resolve(process.env.STANWASM, "ts")
-  : resolve(repo, "node_modules/stanwasm");
+  : resolve(repo, "node_modules/tapewasm");
 
 function locate(path) {
   if (path.startsWith("/vendor/")) {

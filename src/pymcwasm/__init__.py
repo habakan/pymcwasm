@@ -1,8 +1,8 @@
 """Sample a PyMC model in a browser, without a Python sampler.
 
 `pymcwasm` lowers a PyMC model's log density to the autodiff tape that
-[stanwasm](https://github.com/habakan/stanwasm) compiles, hands the tape to
-stanwasm's emitter, and draws from the resulting wasm module with nuts-rs.
+[tapewasm](https://github.com/habakan/tapewasm) compiles, hands the tape to
+tapewasm's emitter, and draws from the resulting wasm module with nuts-rs.
 Inside Pyodide, all of that happens in the page.
 
     import pymcwasm
@@ -29,7 +29,7 @@ import numpy as np
 
 from . import lowering
 from . import _bridge
-from ._bridge import DEFAULT_STANWASM_PATH
+from ._bridge import DEFAULT_TAPEWASM_PATH
 
 __all__ = ["Compiled", "Fit", "compile", "sample", "starting_point", "tape_for"]
 
@@ -116,9 +116,9 @@ class Compiled:
     not depend on the draws, so it is worth keeping.
     """
 
-    def __init__(self, handle, sw, names, init, lower_ms):
+    def __init__(self, handle, tw, names, init, lower_ms):
         self._handle = handle
-        self._sw = sw
+        self._tw = tw
         self.names = names
         self.init = init
         self.lower_ms = lower_ms
@@ -127,7 +127,7 @@ class Compiled:
 
     async def sample(self, draws=1000, warmup=1000, seed=42):
         got = await _bridge.draw(
-            self._handle, self._sw, self.init, warmup, draws, seed, self.names,
+            self._handle, self._tw, self.init, warmup, draws, seed, self.names,
         )
         n = got["nParams"]
         flat = np.asarray(got["draws"], dtype=float)
@@ -135,7 +135,7 @@ class Compiled:
                    self.compile_ms, self.lower_ms)
 
 
-async def compile(model, point=None, stanwasm_path=DEFAULT_STANWASM_PATH):
+async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH):
     """Lower `model` and emit its module.
 
     The data is part of the tape, so the result answers for one model and one
@@ -150,12 +150,12 @@ async def compile(model, point=None, stanwasm_path=DEFAULT_STANWASM_PATH):
         [np.asarray(point[v.name], dtype=float).ravel() for v in model.value_vars]
     )
     lower_ms = (time.perf_counter() - t0) * 1000
-    handle, sw = await _bridge.compile(tape, stanwasm_path)
-    return Compiled(handle, sw, names, init, lower_ms)
+    handle, tw = await _bridge.compile(tape, tapewasm_path)
+    return Compiled(handle, tw, names, init, lower_ms)
 
 
 async def sample(model, draws=1000, warmup=1000, seed=42, point=None,
-                 stanwasm_path=DEFAULT_STANWASM_PATH):
+                 tapewasm_path=DEFAULT_TAPEWASM_PATH):
     """Compile `model` and draw from it, in one go."""
-    compiled = await compile(model, point, stanwasm_path)
+    compiled = await compile(model, point, tapewasm_path)
     return await compiled.sample(draws=draws, warmup=warmup, seed=seed)
