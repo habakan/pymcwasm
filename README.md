@@ -4,6 +4,12 @@ Sample a PyMC model in a browser. The log density is compiled to a WebAssembly
 module and drawn from by [nuts-rs](https://github.com/pymc-devs/nuts-rs); no
 server does the sampling.
 
+![demo](demo.gif)
+
+*Editing a PyMC model in the page, compiling it, and drawing from it. The second
+sample is milliseconds because the compiling is already done. Recorded with
+`scripts/record-demo.mjs`; the Pyodide and PyMC load that precedes it is cut.*
+
 There are two ways in. They are different trades, not a real one and a
 shortcut, and the engine underneath is the same either way.
 

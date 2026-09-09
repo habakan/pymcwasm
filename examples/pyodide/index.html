@@ -96,6 +96,9 @@ $("compile").disabled = false;
 
 async function compile() {
   $("compile").disabled = $("draw").disabled = true;
+  // The previous model's results would otherwise sit under a new model's name.
+  $("out").textContent = "";
+  $("cost").textContent = "";
   say("running your code, then lowering and emitting…");
   try {
     py.globals.set("user_source", $("src").value);
