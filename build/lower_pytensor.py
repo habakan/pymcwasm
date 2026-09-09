@@ -28,13 +28,39 @@ except ImportError:
     from pytensor.graph.basic import ancestors, io_toposort
 
 
+# Every instruction's value, so a lowered subgraph can be compared against what
+# PyTensor computes for the same variable. Only used by `--verify`.
+def _apply(op, args, vals):
+    import math
+    from scipy.special import gammaln
+    from scipy.stats import norm
+
+    a = lambda k: vals[int(args[k])]
+    c = lambda k: float(args[k])
+    return {
+        "new_var": lambda: c(0),
+        "add": lambda: a(0) + a(1), "sub": lambda: a(0) - a(1),
+        "mul": lambda: a(0) * a(1), "div": lambda: a(0) / a(1),
+        "neg": lambda: -a(0), "exp": lambda: math.exp(a(0)),
+        "log": lambda: math.log(a(0)), "sin": lambda: math.sin(a(0)),
+        "cos": lambda: math.cos(a(0)), "sqrt": lambda: math.sqrt(a(0)),
+        "abs": lambda: abs(a(0)), "lgamma": lambda: float(gammaln(a(0))),
+        "phi": lambda: float(norm.cdf(a(0))), "pow": lambda: a(0) ** c(1),
+        "add_c": lambda: a(0) + c(1), "sub_c": lambda: a(0) - c(1),
+        "rsub_c": lambda: c(1) - a(0), "mul_c": lambda: a(0) * c(1),
+        "div_c": lambda: a(0) / c(1), "rdiv_c": lambda: c(1) / a(0),
+    }[op]()
+
+
 class TapeWriter:
     def __init__(self):
         self.lines = []
+        self.values = []
         self.n = 0
 
     def emit(self, *parts):
         self.lines.append(" ".join(str(p) for p in parts))
+        self.values.append(_apply(str(parts[0]), parts[1:], self.values))
         self.n += 1
         return self.n - 1
 
@@ -107,6 +133,10 @@ COMPARISON = {
 }
 
 UNARY_TEST = {"Invert", "IsNan", "IsInf"}
+
+# Comparisons folded to true because a tape value reached them. Vacuous for a
+# bounds check after the transforms; not vacuous for anything else.
+ASSUMED_TRUE = []
 
 PASSTHROUGH = {
     "CheckParameterValue", "ScalarFromTensor", "TensorFromScalar", "Identity",
@@ -198,7 +228,11 @@ class Lowerer:
                     for v in vals[1:]:
                         r = COMPARISON[name](r, v)
                 return ("c", np.asarray(r).astype(float))
-            return ("c", np.array(1.0))
+            ASSUMED_TRUE.append(name)
+            # True, but at the shape the comparison had: a scalar here makes the
+            # reduction over it collapse the wrong axis.
+            shape = np.broadcast_shapes(*[np.shape(x[1]) for x in ins])
+            return ("c", np.ones(shape))
         if name == "Second":
             return ins[1]
         if name in ("Identity", "Cast", "ScalarIdentity"):
@@ -297,37 +331,44 @@ class Lowerer:
                     L[idx] = self.w.const_node(0.0)
         return L
 
-    def solve_triangular(self, a, b, lower=True):
+    def solve_triangular(self, a, b, lower=True, b_ndim=1):
         """Forward or back substitution, one scalar at a time.
 
         `x[i] = (b[i] - sum_{m<i} L[i][m] x[m]) / L[i][i]`, and the mirror of it
-        for an upper factor. `Blockwise` batches, and the right-hand side is a
-        vector or a matrix of columns.
+        for an upper factor. `Blockwise` broadcasts the two operands' batch axes
+        against each other, so one factor can serve many right-hand sides.
         """
         A, B = np.asarray(a[1]), np.asarray(b[1])
         tape = is_tape(a) or is_tape(b)
         dt = object if tape else float
-        batch = A.shape[:-2]
+        a_batch, b_batch = A.shape[:-2], B.shape[:-b_ndim]
+        batch = np.broadcast_shapes(a_batch, b_batch)
         k = A.shape[-1]
-        cols = B.shape[-1] if B.ndim > A.ndim - 1 else None
-        out_shape = batch + ((k,) if cols is None else (k, cols))
-        out = np.empty(out_shape, dtype=dt)
+        cols = B.shape[-1] if b_ndim == 2 else None
+        out = np.empty(batch + ((k,) if cols is None else (k, cols)), dtype=dt)
+
+        def fit(idx, shape):
+            # A batch axis of length one is shared by every index along it.
+            off = len(idx) - len(shape)
+            return tuple(0 if shape[i] == 1 else idx[off + i] for i in range(len(shape)))
+
         wa = lambda v: ("t" if is_tape(a) else "c", np.array(v, dtype=object if is_tape(a) else float))
         wb = lambda v: ("t" if is_tape(b) else "c", np.array(v, dtype=object if is_tape(b) else float))
         wo = lambda v: ("t" if tape else "c", np.array(v, dtype=dt))
         for bi in np.ndindex(batch):
+            ai, bj = fit(bi, a_batch), fit(bi, b_batch)
             order = range(k) if lower else range(k - 1, -1, -1)
             for c in ([None] if cols is None else range(cols)):
                 for i in order:
-                    rhs = bi + ((i,) if c is None else (i, c))
-                    acc = wb(B[rhs])
+                    tail = (i,) if c is None else (i, c)
+                    acc = wb(B[bj + tail])
                     ms = range(i) if lower else range(i + 1, k)
                     for m in ms:
-                        at = bi + ((m,) if c is None else (m, c))
-                        term = self.binary("Mul", wa(A[bi + (i, m)]), wo(out[at]))
+                        prev = (m,) if c is None else (m, c)
+                        term = self.binary("Mul", wa(A[ai + (i, m)]), wo(out[bi + prev]))
                         acc = self.binary("Sub", acc, term)
-                    div = self.binary("TrueDiv", acc, wa(A[bi + (i, i)]))
-                    out[rhs] = np.asarray(div[1]).item()
+                    div = self.binary("TrueDiv", acc, wa(A[ai + (i, i)]))
+                    out[bi + tail] = np.asarray(div[1]).item()
         return ("t" if tape else "c", out)
 
     def reduce_sum(self, a, axis):
@@ -349,7 +390,7 @@ class Lowerer:
         return ("t", out if out_shape else np.array(out.item(), dtype=object))
 
 
-def lower(model, out_path, trace_at=None, test_at=None):
+def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
     logp = model.logp(sum=True)
     value_vars = model.value_vars
     ip = trace_at if trace_at is not None else model.initial_point()
@@ -368,8 +409,12 @@ def lower(model, out_path, trace_at=None, test_at=None):
         memo[v] = ("t", ids)
         n_params += val.size
 
+    # Fixed once: `memo` grows to hold every intermediate, and asking again
+    # would treat those as graph inputs and walk nothing.
+    nodes = io_toposort(list(memo), [logp])
+
     tainted = set(memo)
-    for node in io_toposort(list(memo), [logp]):
+    for node in nodes:
         if any(i in tainted for i in node.inputs):
             tainted.update(node.outputs)
 
@@ -383,7 +428,11 @@ def lower(model, out_path, trace_at=None, test_at=None):
         assert not is_tape(got), "an index that depends on a parameter"
         return got[1]
 
-    for node in io_toposort(list(memo), [logp]):
+    def note(node):
+        if on_node is not None and node.outputs[0] in memo:
+            on_node(node, memo[node.outputs[0]], w)
+
+    for node in nodes:
         if not any(i in tainted for i in node.inputs):
             continue
         op = node.op
@@ -397,6 +446,16 @@ def lower(model, out_path, trace_at=None, test_at=None):
         if core is not None:
             op, name = core, op_name(core)
         inner = getattr(op, "scalar_op", None)
+        if name in ("All", "Any"):
+            a = ins[0]
+            assert not is_tape(a), "a bounds check that reached a parameter"
+            reduce = np.all if name == "All" else np.any
+            axis = getattr(op, "axis", None)
+            axis = tuple(axis) if isinstance(axis, (list, tuple)) else axis
+            memo[node.outputs[0]] = (
+                "c", np.asarray(reduce(np.asarray(a[1]) != 0, axis=axis), dtype=float)
+            )
+            continue
         if name == "Sum" or (name == "CAReduce" and op_name(inner) == "Add"):
             memo[node.outputs[0]] = low.reduce_sum(ins[0], op.axis)
             continue
@@ -438,7 +497,8 @@ def lower(model, out_path, trace_at=None, test_at=None):
             continue
         if name in ("SolveTriangular", "CholeskySolve"):
             memo[node.outputs[0]] = low.solve_triangular(
-                ins[0], ins[1], getattr(op, "lower", True)
+                ins[0], ins[1], getattr(op, "lower", True),
+                getattr(op, "b_ndim", 1),
             )
             continue
         if name == "ExtractDiag":
@@ -517,6 +577,9 @@ def lower(model, out_path, trace_at=None, test_at=None):
                 memo[node.outputs[0]] = ("c", np.concatenate([np.atleast_1d(a) for a in arrs]))
             continue
         raise NotImplementedError(f"op {name}")
+
+    for node in nodes:
+        note(node)
 
     root = memo[logp]
     assert is_tape(root), "logp folded to a constant"
@@ -624,11 +687,7 @@ def student_t(n=25):
     return m
 
 
-# Lowers, and is wrong: see NOTES.md. The linear algebra it needs is exact
-# against numpy on its own, so the fault is in the plumbing around the LKJ
-# transform, not in the decomposition. Listed so the check keeps reporting it
-# rather than leaving it looking unattempted.
-KNOWN_WRONG = {"lkj_mvnormal"}
+KNOWN_WRONG = set()
 
 MODELS = {
     "linear_regression": linear_regression,

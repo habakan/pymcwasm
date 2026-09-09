@@ -1,6 +1,6 @@
 # A PyMC model, compiled ahead of time, sampled in a browser
 
-Six PyMC models are compiled into self-contained wasm modules and sampled in the
+Seven PyMC models are compiled into self-contained wasm modules and sampled in the
 page with nuts-rs. No server does the sampling, and no Python runs in the
 browser.
 
@@ -42,9 +42,6 @@ gets used is the emitter and the sampler.
 - **The data is compiled in.** A module is specific to one model *and one
   dataset*; changing the data means compiling again. That bounds this to fixed
   data and a posterior worth exploring, not to an interactive fit.
-- **`Cholesky` lowers but gives the wrong gradient**, so anything with an
-  `LKJCholeskyCov` or a GP is out. The decomposition is exact on its own; the
-  fault is in the plumbing around the transform.
 - **`Scan` is not lowered**, so state-space models are out. It did not appear in
   any of the nine models surveyed, but it will.
 - **A `Switch` on a parameter is refused** rather than resolved while tracing,
@@ -57,8 +54,13 @@ gets used is the emitter and the sampler.
 ## Models
 
 `linear_regression`, `logistic`, `eight_schools`, `varying_intercepts`,
-`matrix_regression`, `student_t`. Their definitions are in
+`matrix_regression`, `student_t`, `lkj_mvnormal`. Their definitions are in
 `build/lower_pytensor.py`.
+
+A Gaussian process is not among them: `gp_marginal` needs a `Cholesky` of a
+covariance built from the parameters, which lowers to a cubic number of nodes in
+the number of points. Nothing is known to be wrong with it; it has not been
+tried.
 
 ## Status
 

@@ -5,7 +5,7 @@ import init, { AotSampler, setAotExports, sharedMemory } from "/vendor/index.js"
 
 export const MODELS = [
   "linear_regression", "logistic", "eight_schools",
-  "varying_intercepts", "matrix_regression", "student_t",
+  "varying_intercepts", "matrix_regression", "student_t", "lkj_mvnormal",
 ];
 
 let ready;
