@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pymcwasm</title>
+<style>
+  body { font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         color: #1f2933; margin: 0; padding: 3rem 2rem; max-width: 44rem; }
+  h1 { font-size: 1.2rem; margin: 0 0 .5rem; }
+  p { color: #62707c; }
+  a.card { display: block; text-decoration: none; color: inherit;
+           border: 1px solid #dde2e7; border-radius: 6px; padding: 1rem 1.2rem;
+           margin: 1rem 0; }
+  a.card:hover { border-color: #1f2933; }
+  a.card b { display: block; font-size: 1rem; margin-bottom: .3rem; }
+  a.card span { color: #62707c; font-size: 13px; }
+</style>
+
+<h1>pymcwasm</h1>
+<p>
+  A PyMC model's log density compiled to WebAssembly and sampled by nuts-rs, in
+  the page. Two ways in.
+</p>
+
+<a class="card" href="./pyodide/">
+  <b>Write the model here →</b>
+  <span>PyMC runs in the tab under Pyodide. Edit the model, compile it, sample
+  it. Costs a Python runtime on first load — tens of seconds.</span>
+</a>
+
+<a class="card" href="./browser/">
+  <b>Seven compiled beforehand →</b>
+  <span>No Python anywhere. Each model is a wasm module of a few tens of
+  kilobytes, checked against nutpie.</span>
+</a>
+
+<p><a href="https://github.com/habakan/pymcwasm">Source</a></p>

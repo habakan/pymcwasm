@@ -1,0 +1,66 @@
+name: pages
+
+# Both examples are static, so this assembles a directory rather than building
+# anything: the repository as it stands, plus the published `stanwasm` package
+# copied to the path the pages fetch it from.
+#
+# Needs the repository to be public, or a plan that allows Pages on a private
+# one. Until then this only runs when asked.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/**"
+      - "src/**"
+      - "artifacts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: assemble the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - run: npm ci
+
+      # `serve.mjs` maps two paths that do not exist on disk. A static host has
+      # no such mapping, so they become real directories here.
+      - name: lay the site out the way serve.mjs serves it
+        run: |
+          mkdir -p site
+          cp -r examples artifacts site/
+          mkdir -p site/pkg && cp -r src/pymcwasm site/pkg/
+          mkdir -p site/vendor && cp -r node_modules/stanwasm/* site/vendor/
+          cp examples/index.html site/index.html
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: deploy to github-pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

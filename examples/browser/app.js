@@ -1,7 +1,7 @@
 // Everything a page has to do with a precompiled model. Nothing here knows what
 // PyMC is: it loads a module, the buffer sizes recorded beside it, and samples.
 
-import init, { AotSampler, setAotExports, sharedMemory } from "/vendor/index.js";
+import init, { AotSampler, setAotExports, sharedMemory } from "../../vendor/index.js";
 
 export const MODELS = [
   "linear_regression", "logistic", "eight_schools",
@@ -10,7 +10,7 @@ export const MODELS = [
 
 let ready;
 export function start() {
-  ready ??= init({ module_or_path: "/vendor/pkg/stanwasm_bg.wasm" });
+  ready ??= init({ module_or_path: new URL("../../vendor/pkg/stanwasm_bg.wasm", import.meta.url) });
   return ready;
 }
 
@@ -24,8 +24,8 @@ const MATH = {
 
 export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = {}) {
   await start();
-  const meta = await (await fetch(`/artifacts/${name}/meta.json`)).json();
-  const bytes = await (await fetch(`/artifacts/${name}/model.wasm`)).arrayBuffer();
+  const meta = await (await fetch(`../../artifacts/${name}/meta.json`)).json();
+  const bytes = await (await fetch(`../../artifacts/${name}/model.wasm`)).arrayBuffer();
 
   const aot = await WebAssembly.instantiate(bytes, {
     stan: { memory: sharedMemory() },
@@ -52,7 +52,7 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = 
 
 export async function compare(name, options) {
   const { meta, mean, draws, nDraws, ms, moduleBytes } = await sample(name, options);
-  const reference = await (await fetch(`/artifacts/${name}/reference.json`)).json();
+  const reference = await (await fetch(`../../artifacts/${name}/reference.json`)).json();
   const rows = meta.paramNames.map((label, k) => {
     const ref = reference[label];
     return {

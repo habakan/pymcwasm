@@ -56,8 +56,8 @@
 <footer id="foot"></footer>
 
 <script type="module">
-import { MODELS, sample } from "/examples/browser/app.js";
-import { histogram, trace } from "/examples/browser/plot.js";
+import { MODELS, sample } from "./app.js";
+import { histogram, trace } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
 for (const m of MODELS) $("model").add(new Option(m, m));
@@ -72,7 +72,7 @@ async function run() {
       warmup: Number($("warmup").value),
       seed: Number($("seed").value),
     });
-    const ref = await (await fetch(`/artifacts/${name}/reference.json`)).json();
+    const ref = await (await fetch(`../../artifacts/${name}/reference.json`)).json();
 
     $("timing").innerHTML =
       `<b>${r.ms.toFixed(0)} ms</b><br>${(r.nDraws / (r.ms / 1000)).toFixed(0)} draws/s ` +

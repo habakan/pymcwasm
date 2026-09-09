@@ -81,7 +81,7 @@ for (const p of ["pytensor", "pymc"]) await mp.install.callKwargs(p, { deps: fal
 say("loading pymcwasm…");
 py.FS.mkdirTree("/pkg/pymcwasm");
 for (const f of ["__init__.py", "_bridge.py", "lowering.py"]) {
-  py.FS.writeFile(`/pkg/pymcwasm/${f}`, await (await fetch(`/pkg/pymcwasm/${f}`)).text());
+  py.FS.writeFile(`/pkg/pymcwasm/${f}`, await (await fetch(`../../pkg/pymcwasm/${f}`)).text());
 }
 await py.runPythonAsync(`
 import sys; sys.path.insert(0, "/pkg")
@@ -102,11 +102,12 @@ async function compile() {
   say("running your code, then lowering and emitting…");
   try {
     py.globals.set("user_source", $("src").value);
+    py.globals.set("SW", new URL("../../vendor/pkg/stanwasm.js", location.href).href);
     await py.runPythonAsync(`
 import pymcwasm
 ns = {}
 exec(user_source, ns)
-compiled = await pymcwasm.compile(ns["model"], stanwasm_path="/vendor/pkg/stanwasm.js")
+compiled = await pymcwasm.compile(ns["model"], stanwasm_path=SW)
 `);
     $("draw").disabled = false;
     await draw();
