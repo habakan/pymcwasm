@@ -5,7 +5,7 @@ needs Rust and a checkout of stanwasm, and asking that of someone who wants to
 see the thing run would defeat the point.
 
 ```
-export STANWASM=~/work/stanwasm
+export STANWASM=/path/to/stanwasm   # a checkout of github.com/habakan/stanwasm
 uv run --with pymc --with scipy --with nutpie \
   python build_artifact.py <model> ../artifacts/<model>
 ```
