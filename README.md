@@ -141,7 +141,7 @@ Every model is checked twice.
 
 **The gradient**, against `model.compile_dlogp()`, at a point other than the one
 it was lowered at, so a subgraph wrongly frozen into a constant shows up instead
-of cancelling. The worst of the seven is 2.5e-15 relative.
+of cancelling. The worst of the seven is 1.8e-15 relative.
 
 **The posterior**, against `nutpie.compile_pymc_model` on the same model, in the
 unconstrained space so transformed parameters are checked rather than skipped.
@@ -153,6 +153,11 @@ That number moves with nutpie, not only with this code: nutpie 0.16.8 puts the
 same model's `tau_log__` a third of its own sd from where an earlier version
 put it, against the same seed. `reference.json` records the versions that
 produced it so a moved number can be told from a broken one.
+
+Both are run by hand — `python src/pymcwasm/lowering.py` and `npm test` — when
+the emitter or the lowering moves, rather than on every commit. What they check
+changes with those two and with nothing else here, and three browser engines is
+a large install to pay for per push.
 
 Not a speed claim, in either direction.
 
