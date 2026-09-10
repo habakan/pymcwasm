@@ -10,6 +10,12 @@ Inside Pyodide, all of that happens in the page.
     fit["beta"]      # one parameter's draws
     fit.summary()    # mean and sd per parameter
 
+With several chains, the fit becomes an ArviZ `InferenceData` in the model's
+own space — posterior, and sampler statistics when tapewasm returns them:
+
+    fit = await pymcwasm.sample(model, chains=4)
+    idata = fit.to_inference_data()
+
 Compiling is the slow half and does not depend on the draws, so it is worth
 keeping when a page samples the same model more than once:
 
@@ -83,15 +89,73 @@ def tape_for(model, point=None):
 
 
 class Fit:
-    """Post-warmup draws, one column per unconstrained scalar."""
+    """Draws, one column per unconstrained scalar, kept per chain.
 
-    def __init__(self, names, draws, ms, module_bytes, compile_ms, lower_ms):
+    `draws` stacks the chains' post-warmup draws, so `fit["beta"]` and
+    `summary()` pool them; `to_inference_data()` keeps them apart.
+    """
+
+    def __init__(self, names, chain_draws, warmup_draws, stats, ms, module_bytes,
+                 compile_ms, lower_ms, model=None):
         self.names = list(names)
-        self.draws = np.asarray(draws, dtype=float).reshape(-1, len(self.names))
+        n = len(self.names)
+        self.chain_draws = np.asarray(chain_draws, dtype=float).reshape(len(chain_draws), -1, n)
+        self.warmup_draws = np.asarray(warmup_draws, dtype=float).reshape(len(chain_draws), -1, n)
+        self.draws = self.chain_draws.reshape(-1, n)
+        self.stats = stats
         self.ms = ms
         self.module_bytes = module_bytes
         self.compile_ms = compile_ms
         self.lower_ms = lower_ms
+        self._model = model
+
+    def to_inference_data(self, save_warmup=True):
+        """The fit as an ArviZ `InferenceData`, in the model's own space.
+
+        Needs ArviZ, and the model `compile` was given: each draw goes back
+        through the model's transforms, so `sigma` rather than `sigma_log__`,
+        with deterministics alongside and the model's dims and coords.
+        """
+        import arviz as az
+        from pymc.util import get_default_varnames
+
+        model = self._model
+        outs = get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+        fn = model.compile_fn(outs, inputs=model.value_vars, on_unused_input="ignore",
+                              point_fn=False)
+        point = model.initial_point()
+        shapes = [np.shape(np.asarray(point[v.name])) for v in model.value_vars]
+        cuts = np.cumsum([int(np.prod(s)) for s in shapes])[:-1]
+
+        def constrained(block):
+            """(chain, draw, scalar) -> {name: (chain, draw, *shape)}."""
+            per_chain = []
+            for chain in block:
+                rows = [fn(*[p.reshape(s) for p, s in zip(np.split(row, cuts), shapes)])
+                        for row in chain]
+                per_chain.append([np.stack([np.asarray(r[i]) for r in rows])
+                                  for i in range(len(outs))])
+            return {v.name: np.stack([c[i] for c in per_chain]) for i, v in enumerate(outs)}
+
+        groups = {"posterior": constrained(self.chain_draws)}
+        warmup = self.warmup_draws.shape[1]
+        if self.stats is not None:
+            stats = {k: np.asarray(v) for k, v in self.stats.items() if k != "tuning"}
+            stats["diverging"] = stats["diverging"].astype(bool)
+            groups["sample_stats"] = {k: v[:, warmup:] for k, v in stats.items()}
+            if save_warmup and warmup:
+                groups["warmup_sample_stats"] = {k: v[:, :warmup] for k, v in stats.items()}
+        if save_warmup and warmup:
+            groups["warmup_posterior"] = constrained(self.warmup_draws)
+        dims = {v.name: list(model.named_vars_to_dims[v.name])
+                for v in outs if v.name in model.named_vars_to_dims}
+        coords = {k: list(c) for k, c in model.coords.items() if c is not None}
+        # ArviZ 1.0 takes the groups as one mapping; 0.x took one keyword per group.
+        import inspect
+
+        if "posterior" in inspect.signature(az.from_dict).parameters:
+            return az.from_dict(**groups, coords=coords, dims=dims, save_warmup=save_warmup)
+        return az.from_dict(groups, coords=coords, dims=dims, save_warmup=save_warmup)
 
     def __getitem__(self, name):
         return self.draws[:, self.names.index(name)]
@@ -116,7 +180,7 @@ class Compiled:
     not depend on the draws, so it is worth keeping.
     """
 
-    def __init__(self, handle, tw, names, init, lower_ms):
+    def __init__(self, handle, tw, names, init, lower_ms, model=None):
         self._handle = handle
         self._tw = tw
         self.names = names
@@ -124,15 +188,24 @@ class Compiled:
         self.lower_ms = lower_ms
         self.compile_ms = handle.ms
         self.module_bytes = handle.bytes
+        self._model = model
 
-    async def sample(self, draws=1000, warmup=1000, seed=42):
-        got = await _bridge.draw(
-            self._handle, self._tw, self.init, warmup, draws, seed, self.names,
-        )
-        n = got["nParams"]
-        flat = np.asarray(got["draws"], dtype=float)
-        return Fit(self.names, flat[warmup * n:], got["ms"], self.module_bytes,
-                   self.compile_ms, self.lower_ms)
+    async def sample(self, draws=1000, warmup=1000, seed=42, chains=1):
+        """`chains` run one after another from the same start, chain c seeded `seed + c`."""
+        n = len(self.names)
+        runs = [
+            await _bridge.draw(self._handle, self._tw, self.init, warmup, draws, seed + c,
+                               self.names, chain=c)
+            for c in range(chains)
+        ]
+        flat = np.stack([np.asarray(r["draws"], dtype=float).reshape(-1, n) for r in runs])
+        stats = None
+        if all(r.get("stats") for r in runs):
+            stats = {k: np.stack([np.asarray(r["stats"][k]) for r in runs])
+                     for k in runs[0]["stats"]}
+        return Fit(self.names, flat[:, warmup:], flat[:, :warmup], stats,
+                   sum(r["ms"] for r in runs), self.module_bytes, self.compile_ms,
+                   self.lower_ms, self._model)
 
 
 async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH):
@@ -151,11 +224,11 @@ async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH):
     )
     lower_ms = (time.perf_counter() - t0) * 1000
     handle, tw = await _bridge.compile(tape, tapewasm_path)
-    return Compiled(handle, tw, names, init, lower_ms)
+    return Compiled(handle, tw, names, init, lower_ms, model)
 
 
-async def sample(model, draws=1000, warmup=1000, seed=42, point=None,
+async def sample(model, draws=1000, warmup=1000, seed=42, chains=1, point=None,
                  tapewasm_path=DEFAULT_TAPEWASM_PATH):
     """Compile `model` and draw from it, in one go."""
     compiled = await compile(model, point, tapewasm_path)
-    return await compiled.sample(draws=draws, warmup=warmup, seed=seed)
+    return await compiled.sample(draws=draws, warmup=warmup, seed=seed, chains=chains)

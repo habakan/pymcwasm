@@ -195,8 +195,9 @@ examples/pyodide/  the in-page path
   a centred hierarchical model has an exactly zero gradient in its population
   mean, and so does a logit regression on balanced data. `pymcwasm.sample` looks
   for one; a caller supplying its own has to as well.
-- **Continuous parameters only**, and no prior or posterior predictive, and no
-  `InferenceData`.
+- **Continuous parameters only**, and no prior or posterior predictive.
+  `Fit.to_inference_data()` gives ArviZ the posterior and, with a tapewasm
+  that returns them, the sampler statistics — no `log_likelihood` group yet.
 
 ## Status
 
