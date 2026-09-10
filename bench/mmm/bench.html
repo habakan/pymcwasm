@@ -1,0 +1,70 @@
+<!doctype html>
+<title>MMM bench</title>
+<script type="module">
+import init, { AotSampler, setAotExports, sharedMemory } from "/vendor/index.js";
+
+const MATH = {
+  exp: Math.exp, log: Math.log, sin: Math.sin, cos: Math.cos, pow: Math.pow,
+  tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
+  lgamma: () => NaN, digamma: () => NaN, phi: () => NaN,
+};
+
+// Starts are jittered uniformly in [-1, 1], as nuts-rs-wasm's `initial jitter 1`.
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const ART = new URLSearchParams(location.search).get("a");
+let state;
+async function load() {
+  const t0 = performance.now();
+  await init({ module_or_path: "/vendor/pkg/tapewasm_bg.wasm" });
+  const [meta, bytes] = await Promise.all([
+    fetch(`/${ART}/meta.json`).then((r) => r.json()),
+    fetch(`/${ART}/model.wasm`).then((r) => r.arrayBuffer()),
+  ]);
+  const aot = await WebAssembly.instantiate(bytes, { tapewasm: { memory: sharedMemory() }, Math: MATH });
+  const exports = aot.instance.exports;
+  const counter = { n: 0 };
+  // Bound only for the run that counts calls, so the timed runs pay nothing for it.
+  const counted = { ...exports, log_prob_grad: (...a) => (counter.n++, exports.log_prob_grad(...a)) };
+  const sampler = new AotSampler(meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames);
+  state = { meta, exports, counted, counter, sampler };
+  return performance.now() - t0;
+}
+
+window.fit = async ({ seed, targetAccept, gradBased, warmup = 750, draws = 500, chains = 2, count = false }) => {
+  const loadMs = state ? 0 : await load();
+  const { meta, exports, counted, counter, sampler } = state;
+  setAotExports(count ? counted : exports);
+  sampler.setTargetAccept(targetAccept);
+  sampler.setGradBasedEstimate(gradBased);
+  counter.n = 0;
+  const n = meta.nParams, out = [];
+  let divergences = 0, leapfrog = 0;
+  const t0 = performance.now();
+  for (let c = 0; c < chains; c++) {
+    const rng = mulberry32(seed * 1000 + c);
+    const start = Float64Array.from(meta.initialPoint, (v) => v + (2 * rng() - 1));
+    const r = sampler.sampleWithStats(start, warmup, draws, BigInt(seed * 1000 + c), c);
+    out.push(Array.from(r.draws.subarray(warmup * n)));
+    divergences += r.diverging.subarray(warmup).reduce((a, b) => a + b, 0);
+    leapfrog += r.numSteps.reduce((a, b) => a + b, 0);
+    r.free();
+  }
+  const sampleMs = performance.now() - t0;
+  const res = performance.getEntriesByType("resource").concat(performance.getEntriesByType("navigation"));
+  return {
+    loadMs, sampleMs, divergences, leapfrog, calls: count ? counter.n : null,
+    sinceNavMs: performance.now(),
+    transfer: res.reduce((a, r) => a + (r.transferSize || 0), 0),
+    requests: res.length, names: meta.paramNames, draws: out,
+  };
+};
+window.ready = true;
+</script>

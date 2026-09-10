@@ -177,6 +177,7 @@ wasm.
 src/pymcwasm/      the package a Pyodide page imports, and the lowering
 build/             turns a model into an artifact (needs a tapewasm checkout)
 artifacts/         seven of them, committed
+bench/mmm/         nuts-rs-wasm's demo MMM, timed against its own benchmark
 examples/browser/  the precompiled path
 examples/pyodide/  the in-page path
 ```
