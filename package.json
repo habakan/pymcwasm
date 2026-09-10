@@ -9,7 +9,7 @@
     "test:pyodide": "node examples/pyodide/check.mjs"
   },
   "dependencies": {
-    "tapewasm": "^0.1.0"
+    "tapewasm": "^0.2.0"
   },
   "devDependencies": {
     "playwright": "^1.56.0"

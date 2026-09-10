@@ -1,0 +1,340 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a tiny digit decoder, trained in this tab</title>
+<style>
+  :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --ok:#2d7a4b; --accent:#1f6f5c; --handle:#c9622a; }
+  html, body { height: 100%; }
+  body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         color: var(--ink); margin: 0; padding: 1rem 1.25rem; box-sizing: border-box;
+         display: flex; flex-direction: column; gap: .75rem; overflow: hidden; }
+  h1 { font-size: 1.05rem; margin: 0; white-space: nowrap; }
+  h2 { font-size: .92rem; margin: 0 0 .3rem; }
+  .dim { color: var(--dim); }
+  code { white-space: nowrap; }
+
+  header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; flex: none; }
+  .desc { color: var(--dim); font-size: 12px; flex: 1 1 22rem; min-width: 0; }
+  details.desc summary { cursor: pointer; color: var(--ink); }
+  details.desc[open] summary { margin-bottom: .3rem; }
+  .bar { display: flex; gap: .9rem; align-items: center; flex: none; }
+  button { font: inherit; padding: .35rem 1rem; border: 1px solid var(--ink);
+           border-radius: 4px; background: var(--ink); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--dim); font-size: 12px; max-width: 34rem; }
+  #status b { color: var(--ink); }
+
+  #spark { width: 100%; height: 34px; flex: none; }
+  #spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+
+  /* Everything below the header fills the viewport; only the gallery's thumb
+     grid scrolls, if 32 images don't fit at a comfortable size. */
+  .layout { flex: 1 1 auto; min-height: 0; display: grid;
+            grid-template-columns: 230px 280px 1fr; gap: 1rem; }
+  @media (max-width: 900px) {
+    body { overflow: auto; }
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .panel { border: 1px solid var(--line); border-radius: 6px; padding: .8rem;
+           min-height: 0; display: flex; flex-direction: column; }
+  .explorer { gap: .8rem; }
+  .placeholder { color: var(--dim); font-size: 12px; }
+  .explorer.ready .placeholder { display: none; }
+  .explorer .live { display: none; }
+  .explorer.ready .live { display: block; }
+  #scatter { width: 100%; height: auto; cursor: crosshair; touch-action: none; flex: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10.5px; color: var(--dim); margin-top: .4rem; }
+  .legend .sw { display: inline-flex; align-items: center; gap: 4px; }
+  .legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  #decodeCanvas { image-rendering: pixelated; width: 100%; aspect-ratio: 1; border: 1px solid var(--line); }
+  .readout { font-size: 12px; color: var(--dim); margin-top: .5rem; }
+  .readout b { color: var(--ink); }
+  .match { margin-top: .5rem; display: flex; gap: 8px; align-items: center; }
+  .match canvas { image-rendering: pixelated; width: 48px; height: 48px; border: 1px solid var(--line); }
+
+  /* Before training the explorer panels are `display:none`, so without an
+     explicit column the gallery falls into the 230px track instead of 1fr. */
+  .gallery { grid-column: 3; min-width: 0; }
+  @media (max-width: 900px) { .gallery { grid-column: 1; } }
+  .thumbs { flex: 1 1 auto; min-height: 0; overflow-y: auto;
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+            gap: 8px; align-content: start; }
+  .thumb { border: 1px solid var(--line); border-radius: 4px; padding: 5px;
+           display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .thumb canvas { image-rendering: pixelated; width: 66px; height: 66px; }
+  .thumb .tag { font-size: 9.5px; color: var(--dim); }
+</style>
+
+<header>
+  <h1>A tiny decoder, trained right here</h1>
+  <details class="desc">
+    <summary>compiled &amp; fit live via tapewasm's <code>compileTape()</code> + <code>advi()</code> &mdash; what's that mean?</summary>
+    Nothing on this page was precompiled: the button writes a tape by hand
+    (<code>z &rarr; Dense(2&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>),
+    compiles it, and fits it &mdash; the same wasm module the rest of pymcwasm
+    samples with. 32 real MNIST digits (posteriordb's subset), downsampled to
+    14&times;14 so training takes seconds, not tens of them. An earlier
+    version fit <i>linear</i> probabilistic PCA instead; its reconstructions
+    matched textbook 2-component PCA almost exactly &mdash; the problem, since
+    2 linear components only explain ~27% of the variance across 8 digit
+    classes. This nonlinear decoder, same 2D latent space, roughly halves
+    that reconstruction error.
+  </details>
+  <div class="bar">
+    <button id="go">train the decoder</button>
+    <span id="status">idle — nothing trained yet</span>
+  </div>
+</header>
+
+<svg id="spark" viewBox="0 0 600 34" hidden></svg>
+
+<div class="layout">
+  <div class="panel explorer" id="explorer">
+    <h2>Latent space</h2>
+    <p class="placeholder">Train the decoder to explore it.</p>
+    <div class="live">
+      <p class="dim" style="margin:0 0 .4rem">Each digit's fitted <code>z</code>. Drag, or click a point.</p>
+      <svg id="scatter" viewBox="0 0 230 230"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+
+  <div class="panel explorer" id="explorer2">
+    <h2>Decoded</h2>
+    <p class="placeholder">Nothing fitted yet.</p>
+    <div class="live">
+    <p class="dim" style="margin:0 0 .4rem">Rendered live from the fitted weights.</p>
+    <canvas id="decodeCanvas"></canvas>
+    <div class="readout">
+      <div>z[0] = <b id="z0Val">0.000</b> &nbsp; z[1] = <b id="z1Val">0.000</b></div>
+      <div class="match" id="match"></div>
+    </div>
+    </div>
+  </div>
+
+  <div class="panel gallery">
+    <h2>Training set</h2>
+    <p class="dim" style="margin:0 0 .4rem">32 images, 4/digit &middot; original above, decoder's fit below.</p>
+    <p class="dim" style="margin:0 0 .4rem;font-size:11px">Digits from <a href="http://yann.lecun.com/exdb/mnist/">MNIST</a> (LeCun, Cortes, Burges; CC BY-SA 3.0), a 32-image subset via <a href="https://github.com/stan-dev/posteriordb">posteriordb</a>.</p>
+    <div class="thumbs" id="thumbs"></div>
+  </div>
+</div>
+
+<script type="module">
+import { trainDecoder, downsample14 } from "./app.js";
+
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs) => {
+  const el = document.createElementNS(NS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+};
+
+// A fixed, colorblind-checked hue per digit 0-7; each point is also labeled
+// with its digit, so identity never rests on color alone.
+const DIGIT_COLOR = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
+
+function paintGrid(canvas, pixels, gridSize) {
+  canvas.width = gridSize; canvas.height = gridSize;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(gridSize, gridSize);
+  for (let i = 0; i < pixels.length; i++) {
+    const t = Math.min(1, Math.max(0, pixels[i]));
+    const v = Math.round(255 * (1 - t));
+    img.data[i * 4 + 0] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawSpark(values) {
+  const svg = $("spark");
+  svg.hidden = false;
+  svg.innerHTML = "";
+  if (values.length < 2) return;
+  const w = 600, h = 34, pad = 3;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = Math.max(hi - lo, 1e-9);
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - lo) / span) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  svg.appendChild(svgEl("polyline", { points: pts }));
+}
+
+function setupExplorer(result, labels) {
+  const scatter = $("scatter");
+  scatter.innerHTML = "";
+  $("legend").innerHTML = "";
+  $("explorer").classList.add("ready");
+  $("explorer2").classList.add("ready");
+
+  const SIZE = 230, MARGIN = 18;
+  const allZ = result.z.flat();
+  const domain = Math.max(1, ...allZ.map(Math.abs)) * 1.15;
+  const toPx = (z0, z1) => {
+    const s = (SIZE - 2 * MARGIN) / (2 * domain);
+    return [MARGIN + (z0 + domain) * s, (SIZE - MARGIN) - (z1 + domain) * s];
+  };
+  const toData = (px, py) => {
+    const s = (SIZE - 2 * MARGIN) / (2 * domain);
+    return [(px - MARGIN) / s - domain, (SIZE - MARGIN - py) / s - domain];
+  };
+
+  for (let g = Math.ceil(-domain); g <= domain; g++) {
+    const [x0, y0] = toPx(g, -domain), [x1, y1] = toPx(g, domain);
+    scatter.appendChild(svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#eef1f3", "stroke-width": g === 0 ? 1.2 : 0.6 }));
+    const [xa, ya] = toPx(-domain, g), [xb, yb] = toPx(domain, g);
+    scatter.appendChild(svgEl("line", { x1: xa, y1: ya, x2: xb, y2: yb, stroke: "#eef1f3", "stroke-width": g === 0 ? 1.2 : 0.6 }));
+  }
+
+  const decodeCanvas = $("decodeCanvas");
+
+  function showMatch(idx) {
+    const el = $("match");
+    if (idx == null) { el.innerHTML = `<span class="dim">no training digit this close</span>`; return; }
+    el.innerHTML = "";
+    const c = document.createElement("canvas");
+    // the *original* photo, not the reconstruction, beside the live decode
+    paintGrid(c, ORIGINAL_PIXELS[idx], result.gridSize);
+    const label = document.createElement("span");
+    label.textContent = `closest: digit ${labels[idx]} (#${idx})`;
+    el.append(c, label);
+  }
+
+  function setLatent(z0, z1, snapIdx) {
+    $("z0Val").textContent = z0.toFixed(3);
+    $("z1Val").textContent = z1.toFixed(3);
+    paintGrid(decodeCanvas, result.decode(z0, z1), result.gridSize);
+    handle.setAttribute("cx", toPx(z0, z1)[0]);
+    handle.setAttribute("cy", toPx(z0, z1)[1]);
+    if (snapIdx != null) { showMatch(snapIdx); return; }
+    let best = -1, bestD = Infinity;
+    result.z.forEach((z, i) => {
+      const d = Math.hypot(z[0] - z0, z[1] - z1);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    showMatch(bestD < domain * 0.12 ? best : null);
+  }
+
+  const points = svgEl("g", {});
+  scatter.appendChild(points);
+  result.z.forEach((z, i) => {
+    const [px, py] = toPx(z[0], z[1]);
+    const g = svgEl("g", { style: "cursor:pointer" });
+    g.appendChild(svgEl("circle", { cx: px, cy: py, r: 6, fill: DIGIT_COLOR[labels[i]], "fill-opacity": 0.85, stroke: "#fff", "stroke-width": 1 }));
+    const t = svgEl("text", { x: px, y: py + 2.6, "text-anchor": "middle", "font-size": 7, fill: "#fff", style: "pointer-events:none" });
+    t.textContent = labels[i];
+    g.appendChild(t);
+    g.addEventListener("pointerdown", (e) => { e.stopPropagation(); setLatent(z[0], z[1], i); });
+    points.appendChild(g);
+  });
+
+  const handle = svgEl("circle", { r: 5.5, fill: "var(--handle)", stroke: "#fff", "stroke-width": 1.6 });
+  scatter.appendChild(handle);
+
+  let dragging = false;
+  function pointerToLatent(e) {
+    const rect = scatter.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (SIZE / rect.width);
+    const py = (e.clientY - rect.top) * (SIZE / rect.height);
+    let [z0, z1] = toData(px, py);
+    z0 = Math.max(-domain, Math.min(domain, z0));
+    z1 = Math.max(-domain, Math.min(domain, z1));
+    return [z0, z1];
+  }
+  scatter.addEventListener("pointerdown", (e) => { dragging = true; scatter.setPointerCapture(e.pointerId); setLatent(...pointerToLatent(e)); });
+  scatter.addEventListener("pointermove", (e) => { if (dragging) setLatent(...pointerToLatent(e)); });
+  scatter.addEventListener("pointerup", () => { dragging = false; });
+  scatter.addEventListener("pointercancel", () => { dragging = false; });
+
+  for (let d = 0; d < 8; d++) {
+    const sw = document.createElement("span");
+    sw.className = "sw";
+    sw.innerHTML = `<span class="dot" style="background:${DIGIT_COLOR[d]}"></span>${d}`;
+    $("legend").appendChild(sw);
+  }
+
+  setLatent(0, 0);
+}
+
+let ORIGINAL_PIXELS = null;
+
+async function run() {
+  $("go").disabled = true;
+  $("thumbs").innerHTML = "";
+  $("explorer").classList.remove("ready");
+  $("explorer2").classList.remove("ready");
+  const tStart = performance.now();
+  try {
+    const raw = await (await fetch("./digits.json")).json();
+    const data = {
+      pixels: raw.pixels.map(downsample14),
+      labels: raw.labels,
+      gridSize: 14,
+    };
+    ORIGINAL_PIXELS = data.pixels;
+
+    // Build the thumbnail cells up front — the recon canvases start blank
+    // and get painted once per replayed snapshot below.
+    const reconCanvases = [];
+    for (let i = 0; i < data.pixels.length; i++) {
+      const cell = document.createElement("div");
+      cell.className = "thumb";
+      const origC = document.createElement("canvas");
+      const reconC = document.createElement("canvas");
+      paintGrid(origC, data.pixels[i], data.gridSize);
+      reconC.width = data.gridSize; reconC.height = data.gridSize;
+      const tag = document.createElement("div");
+      tag.className = "tag";
+      tag.textContent = `${data.labels[i]} · #${i}`;
+      cell.append(origC, reconC, tag);
+      $("thumbs").appendChild(cell);
+      reconCanvases.push(reconC);
+    }
+
+    const result = await trainDecoder({
+      pixels: data.pixels,
+      gridSize: data.gridSize,
+      onStatus: (s) => { $("status").textContent = s; },
+    });
+
+    drawSpark(result.elboTrace);
+
+    // Replay the snapshots so the reconstructions visibly converge over the run,
+    // rather than only showing the settled fit.
+    const lastIter = result.snapshots.at(-1)?.iter;
+    for (const snap of result.snapshots) {
+      $("status").textContent = `replaying — iteration ${snap.iter.toFixed(0)}/${lastIter.toFixed(0)}`;
+      for (let i = 0; i < data.pixels.length; i++) {
+        paintGrid(reconCanvases[i], result.decodeAt(snap, snap.z[i][0], snap.z[i][1]), data.gridSize);
+      }
+      await new Promise((r) => setTimeout(r, 90));
+    }
+    // The recorded snapshots are raw iterates; the final fit is Polyak-averaged
+    // over the run's back half, so it settles a little past the last of them.
+    for (let i = 0; i < data.pixels.length; i++) {
+      paintGrid(reconCanvases[i], result.recon[i], data.gridSize);
+    }
+
+    setupExplorer(result, data.labels);
+
+    const totalS = ((performance.now() - tStart) / 1000).toFixed(1);
+    $("status").innerHTML =
+      `done in <b>${totalS}s</b> (compile ${result.compileMs.toFixed(0)}ms, ` +
+      `train ${(result.trainMs / 1000).toFixed(1)}s) — ${result.nParams} params, ` +
+      `${result.tapeLines.toLocaleString()} tape lines, ${result.moduleBytes.toLocaleString()} byte module. ` +
+      `reconstruction MSE ${result.mse.toFixed(4)} (the earlier linear/PPCA version of this page: ~0.047).`;
+  } catch (e) {
+    $("status").textContent = "error: " + (e?.message ?? String(e));
+    console.error(e);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+$("go").addEventListener("click", run);
+window.done = true;
+</script>
