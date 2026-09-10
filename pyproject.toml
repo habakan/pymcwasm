@@ -15,6 +15,7 @@ stanwasm = "https://github.com/habakan/stanwasm"
 # Only the offline artifact builder and the checks need these; the package
 # itself runs inside Pyodide, where PyMC is installed by the page.
 build = ["pymc", "scipy", "nutpie", "pandas"]
+test = ["pymc", "arviz", "pytest"]
 
 [build-system]
 requires = ["hatchling"]
