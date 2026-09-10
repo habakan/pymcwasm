@@ -203,4 +203,6 @@ examples/pyodide/  the in-page path
 An experiment. It answers whether the thing runs, not whether it should exist.
 Not affiliated with PyMC.
 
-Apache-2.0.
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT),
+at your option. Unless you state otherwise, any contribution you submit shall be
+dual licensed as above, with no additional terms.
