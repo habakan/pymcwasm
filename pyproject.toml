@@ -3,7 +3,7 @@ name = "pymcwasm"
 version = "0.1.0"
 description = "Sample a PyMC model in a browser: its log density compiled to WebAssembly, drawn by nuts-rs, with no Python sampler."
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["numpy"]
 
