@@ -134,13 +134,18 @@ COMPARISON = {
 
 UNARY_TEST = {"Invert", "IsNan", "IsInf"}
 
-# Comparisons folded to true because a tape value reached them. Vacuous for a
-# bounds check after the transforms; not vacuous for anything else.
+# A continuous value equals a given number, or is nan or inf, with probability
+# zero, so these fold to false where a bounds check folds to true.
+ASSUMED_FALSE = {"EQ", "IsNan", "IsInf"}
+
+# Comparisons folded because a tape value reached them. Vacuous for a bounds
+# check after the transforms, or for a test of a measure-zero event.
 ASSUMED_TRUE = []
 
 PASSTHROUGH = {
     "CheckParameterValue", "ScalarFromTensor", "TensorFromScalar", "Identity",
     "SpecifyShape", "Cast", "ViewOp", "DeepCopyOp", "Unbroadcast",
+    "TensorFromXTensor", "XTensorFromTensor",
 }
 
 
@@ -229,10 +234,10 @@ class Lowerer:
                         r = COMPARISON[name](r, v)
                 return ("c", np.asarray(r).astype(float))
             ASSUMED_TRUE.append(name)
-            # True, but at the shape the comparison had: a scalar here makes the
+            # Folded at the shape the comparison had: a scalar here makes the
             # reduction over it collapse the wrong axis.
             shape = np.broadcast_shapes(*[np.shape(x[1]) for x in ins])
-            return ("c", np.ones(shape))
+            return ("c", np.zeros(shape) if name in ASSUMED_FALSE else np.ones(shape))
         if name == "Second":
             return ins[1]
         if name in ("Identity", "Cast", "ScalarIdentity"):
@@ -371,6 +376,34 @@ class Lowerer:
                     out[bi + tail] = np.asarray(div[1]).item()
         return ("t" if tape else "c", out)
 
+    def convolve1d(self, x, k, full):
+        """`numpy.convolve` along the last axis, one lag at a time.
+
+        Valid mode is `out[t] = sum_j x[t + m-1 - j] k[j]`, and full mode is
+        valid mode over `x` padded with `m-1` zeros each side. `Blockwise` hands
+        over leading batch axes, which the elementwise products broadcast.
+        """
+        F = np.asarray(full[1])
+        assert F.all() == F.any(), "a batch mixing full and valid convolution"
+        m = np.shape(k[1])[-1]
+        if F.any():
+            X = np.asarray(x[1])
+            pad = [(0, 0)] * (X.ndim - 1) + [(m - 1, m - 1)]
+            if is_tape(x):
+                x = ("t", np.pad(X, pad, constant_values=self.w.const_node(0.0)))
+            else:
+                x = ("c", np.pad(X, pad))
+        X, K = np.asarray(x[1]), np.asarray(k[1])
+        n = X.shape[-1]
+        assert n >= m, "a kernel longer than the signal"
+        L = n - m + 1
+        acc = None
+        for j in range(m):
+            term = self.binary("Mul", (x[0], X[..., m - 1 - j : m - 1 - j + L]),
+                               (k[0], K[..., j : j + 1]))
+            acc = term if acc is None else self.binary("Add", acc, term)
+        return acc
+
     def reduce_sum(self, a, axis):
         if not is_tape(a):
             return ("c", np.sum(a[1], axis=axis))
@@ -469,7 +502,10 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
             continue
         if name in ("Subtensor", "AdvancedSubtensor1", "AdvancedSubtensor"):
             a = ins[0]
-            keys = tuple(np.asarray(x[1]).astype(int) if not is_tape(x) else None for x in ins[1:])
+            if name == "Subtensor":
+                keys = static_index(op, node.inputs, resolve_scalar)
+            else:
+                keys = tuple(np.asarray(x[1]).astype(int) if not is_tape(x) else None for x in ins[1:])
             memo[node.outputs[0]] = (a[0], np.asarray(a[1])[keys if len(keys) > 1 else keys[0]])
             continue
         if name in ("Dot", "Dot22", "Gemv", "CGemv", "BatchedDot"):
@@ -524,6 +560,9 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
             continue
         if name == "Cholesky":
             memo[node.outputs[0]] = low.cholesky(ins[0], getattr(op, "lower", True))
+            continue
+        if name == "Convolve1d":
+            memo[node.outputs[0]] = low.convolve1d(*ins)
             continue
         if name in ("AdvancedIncSubtensor", "AdvancedIncSubtensor1", "IncSubtensor"):
             base, values = ins[0], ins[1]
