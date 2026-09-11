@@ -49,7 +49,7 @@ function sigmoidNode(op, x) {
   return op(`rdiv_c ${den} 1.0`);
 }
 
-export function buildDecoderTape({ N, D_out, H, sigma = 0.15, pixel, seed = 1 }) {
+export function buildDecoderTape({ N, D_out, H, sigma = 0.05, pixel, seed = 1 }) {
   const lines = [];
   let next = 0;
   const op = (text) => { lines.push(text); return next++; };
@@ -162,7 +162,8 @@ export async function compileDecoder({ pixels, gridSize, H = 20, seed = 1 }) {
   await start();
   const N = pixels.length, D_out = gridSize * gridSize;
   const { text, totalParams } = buildDecoderTape({
-    N, D_out, H, sigma: 0.15, pixel: (i, j) => pixels[i][j], seed,
+    // At sd 0.15 the N(0,1) priors outweigh 32 images and the fit blurs (MSE ~0.021 vs ~0.006).
+    N, D_out, H, sigma: 0.05, pixel: (i, j) => pixels[i][j], seed,
   });
 
   const t0 = performance.now();

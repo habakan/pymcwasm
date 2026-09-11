@@ -86,8 +86,8 @@
     version fit <i>linear</i> probabilistic PCA instead; its reconstructions
     matched textbook 2-component PCA almost exactly &mdash; the problem, since
     2 linear components only explain ~27% of the variance across 8 digit
-    classes. This nonlinear decoder, same 2D latent space, roughly halves
-    that reconstruction error.
+    classes. This nonlinear decoder, same 2D latent space, cuts that
+    reconstruction error about eightfold.
   </details>
   <div class="bar">
     <button id="compile">compile</button>
@@ -137,7 +137,7 @@
         <text x="212" y="214" style="font-size:10px">W₂,b₂</text>
         <text class="note" x="212" y="99">N(0, 1)</text>
         <text class="note" x="212" y="181">N(0, 1)</text>
-        <text class="note" x="212" y="282">sd 0.15</text>
+        <text class="note" x="212" y="282">sd 0.05</text>
       </g>
       <text class="note" x="104" y="52">N(0, I₂)</text>
       <text class="note" x="104" y="154">20 units</text>
@@ -145,7 +145,7 @@
     <pre class="eq">zᵢ  ~ N(0, I₂)
 hᵢ  = sigmoid(W₁ᵀzᵢ + b₁)
 μᵢ  = sigmoid(W₂ᵀhᵢ + b₂)
-xᵢⱼ ~ N(μᵢⱼ, 0.15²)</pre>
+xᵢⱼ ~ N(μᵢⱼ, 0.05²)</pre>
     <p class="dim">Shaded: observed pixel. Double circle: deterministic.
     Not a VAE &mdash; there is no encoder. Each <code>zᵢ</code> is its own
     parameter, fit jointly with the weights by mean-field ADVI.</p>
