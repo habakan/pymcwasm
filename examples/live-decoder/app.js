@@ -1,5 +1,6 @@
 // A small neural decoder, z (2D) -> Dense -> sigmoid -> Dense -> sigmoid, written
 // as a tape by hand and fit in this tab by tapewasm's compileTape() + advi().
+// compileDecoder/trainDecoder run in worker.js; the rest is the page's too.
 
 import init, { AotSampler, compileTape, setAotExports, sharedMemory } from "../../vendor/index.js";
 
@@ -116,7 +117,7 @@ function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
 
 /** Splits one flat `advi()` parameter vector into the shapes this decoder
  * actually is. */
-function decomposeMu(vec, { N, D_out, H }) {
+export function decomposeMu(vec, { N, D_out, H }) {
   let q = 0;
   const W1 = [[], []];
   for (let d = 0; d < 2; d++) for (let k = 0; k < H; k++) W1[d].push(vec[q++]);
@@ -131,7 +132,7 @@ function decomposeMu(vec, { N, D_out, H }) {
   return { W1, b1, W2, b2, z, H, D_out };
 }
 
-function decodeWith({ W1, b1, W2, b2, H, D_out }, z0, z1) {
+export function decodeWith({ W1, b1, W2, b2, H, D_out }, z0, z1) {
   const hidden = new Float64Array(H);
   for (let k = 0; k < H; k++) hidden[k] = sigmoid(z0 * W1[0][k] + z1 * W1[1][k] + b1[k]);
   const row = new Float64Array(D_out);
@@ -176,7 +177,7 @@ export async function compileDecoder({ pixels, gridSize, H = 20, seed = 1 }) {
   const sampler = new AotSampler(built.nParams, built.scratchInit, built.layoutId, []);
 
   return {
-    sampler, pixels, gridSize, totalParams, shape: { N, D_out, H },
+    sampler, totalParams, shape: { N, D_out, H },
     compileMs,
     moduleBytes: built.wasm.length,
     nParams: built.nParams,
@@ -184,43 +185,18 @@ export async function compileDecoder({ pixels, gridSize, H = 20, seed = 1 }) {
   };
 }
 
+/** One `advi()` run. `onSnapshot(iter, mu, elbo)` fires as it goes on a tapewasm
+ * that has the hook; 0.2.0 ignores it and only `muSnapshots` come back. */
 export function trainDecoder(compiled, {
   numIters = 4000, mcSamples = 3, learningRate = 0.02,
-  seed = Date.now() & 0xffff, snapshotEvery = 60,
+  seed = Date.now() & 0xffff, snapshotEvery = 60, onSnapshot,
 } = {}) {
-  const { sampler, pixels, gridSize, totalParams, shape } = compiled;
-  const { N, D_out } = shape;
-
+  const { sampler, totalParams, shape } = compiled;
   const initVec = initVector({ ...shape, totalParams, seed: seed + 1 });
   const t0 = performance.now();
-  const result = sampler.advi(initVec, numIters, mcSamples, learningRate, BigInt(seed), snapshotEvery);
-  const trainMs = performance.now() - t0;
-
-  const fit = decomposeMu(result.mu, shape);
-  const decode = (z0, z1) => decodeWith(fit, z0, z1);
-
-  let mse = 0;
-  const recon = [];
-  for (let i = 0; i < N; i++) {
-    const row = decode(fit.z[i][0], fit.z[i][1]);
-    for (let j = 0; j < D_out; j++) mse += (row[j] - pixels[i][j]) ** 2;
-    recon.push(row);
-  }
-  mse /= N * D_out;
-
-  // Each snapshot is the raw (pre-averaging) iterate, decomposed like the fit, so
-  // the page can replay how each reconstruction evolved over the one run.
-  const snapshotCount = result.snapshotIters.length;
-  const snapshots = [];
-  for (let s = 0; s < snapshotCount; s++) {
-    const vec = result.muSnapshots.subarray(s * totalParams, (s + 1) * totalParams);
-    snapshots.push({ iter: result.snapshotIters[s], ...decomposeMu(vec, shape) });
-  }
-
+  const r = sampler.advi(initVec, numIters, mcSamples, learningRate, BigInt(seed), snapshotEvery, onSnapshot);
   return {
-    z: fit.z, recon, mse, decode, gridSize, snapshots,
-    decodeAt: (snapshot, z0, z1) => decodeWith(snapshot, z0, z1),
-    elboTrace: Array.from(result.elboTrace),
-    trainMs,
+    mu: r.mu, muSnapshots: r.muSnapshots, snapshotIters: r.snapshotIters,
+    elboTrace: r.elboTrace, trainMs: performance.now() - t0,
   };
 }

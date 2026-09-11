@@ -184,7 +184,7 @@ xᵢⱼ ~ N(μᵢⱼ, 0.15²)</pre>
 </div>
 
 <script type="module">
-import { compileDecoder, trainDecoder, downsample14 } from "./app.js";
+import { decomposeMu, decodeWith, downsample14 } from "./app.js";
 
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -324,21 +324,37 @@ function setupExplorer(result, labels) {
   setLatent(0, 0);
 }
 
-let ORIGINAL_PIXELS = null, LABELS = null, compiled = null, reconCanvases = [];
+let ORIGINAL_PIXELS = null, LABELS = null, SHAPE = null, reconCanvases = [];
 
-// compileTape() and advi() block the main thread, so let the status repaint first.
-const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+// One request in flight at a time: the buttons are disabled until it answers.
+let pending = null;
+worker.onmessage = ({ data }) => pending?.(data);
+const ask = (msg, onSnapshot) => new Promise((resolve, reject) => {
+  pending = (d) => {
+    if (d.type === "snapshot") return onSnapshot?.(d);
+    pending = null;
+    d.type === "error" ? reject(new Error(d.message)) : resolve(d);
+  };
+  worker.postMessage(msg);
+});
+
+function paintRecon(mu) {
+  const fit = decomposeMu(mu, SHAPE);
+  for (let i = 0; i < reconCanvases.length; i++) {
+    paintGrid(reconCanvases[i], decodeWith(fit, fit.z[i][0], fit.z[i][1]), 14);
+  }
+}
 
 async function compile() {
   $("compile").disabled = true;
   $("status").textContent = "writing the tape and compiling it…";
-  await paint();
   try {
     const raw = await (await fetch("./digits.json")).json();
     ORIGINAL_PIXELS = raw.pixels.map(downsample14);
     LABELS = raw.labels;
 
-    // The recon canvases start blank and get painted once per replayed snapshot.
+    // The recon canvases start blank and get painted as training reports.
     $("thumbs").innerHTML = "";
     reconCanvases = [];
     for (let i = 0; i < ORIGINAL_PIXELS.length; i++) {
@@ -355,12 +371,12 @@ async function compile() {
       $("thumbs").appendChild(cell);
       reconCanvases.push(reconC);
     }
-    await paint();
 
-    compiled = await compileDecoder({ pixels: ORIGINAL_PIXELS, gridSize: 14 });
+    const c = await ask({ type: "compile", pixels: ORIGINAL_PIXELS, gridSize: 14 });
+    SHAPE = c.shape;
     $("compileInfo").innerHTML =
-      `compiled in <b>${compiled.compileMs.toFixed(0)}ms</b> &mdash; ${compiled.nParams.toLocaleString()} params, ` +
-      `${compiled.tapeLines.toLocaleString()} tape lines, ${compiled.moduleBytes.toLocaleString()} byte module.`;
+      `compiled in <b>${c.compileMs.toFixed(0)}ms</b> &mdash; ${c.nParams.toLocaleString()} params, ` +
+      `${c.tapeLines.toLocaleString()} tape lines, ${c.moduleBytes.toLocaleString()} byte module.`;
     $("compile").textContent = "compiled";
     $("status").textContent = "compiled — ready to train";
     $("train").disabled = false;
@@ -375,31 +391,45 @@ async function train() {
   $("train").disabled = true;
   $("explorer").classList.remove("ready");
   $("explorer2").classList.remove("ready");
-  $("status").textContent = "training — all 4,000 ADVI iterations × 3 MC samples run in one blocking wasm call; nothing redraws until it returns…";
-  await paint();
+  $("status").textContent = "training — 4,000 ADVI iterations × 3 MC samples, in a worker…";
   try {
-    const result = trainDecoder(compiled);
-    drawSpark(result.elboTrace);
+    const elbo = [];
+    const r = await ask({ type: "train" }, (snap) => {
+      $("status").textContent = `training — iteration ${snap.iter.toFixed(0)}/4000`;
+      elbo.push(...snap.elbo);
+      drawSpark(elbo);
+      paintRecon(snap.mu);
+    });
+    drawSpark(Array.from(r.elboTrace));
 
-    // Replay the snapshots so the reconstructions visibly converge over the run,
-    // rather than only showing the settled fit.
-    const lastIter = result.snapshots.at(-1)?.iter;
-    for (const snap of result.snapshots) {
-      $("status").textContent = `training done — replaying the recorded iterates: ${snap.iter.toFixed(0)}/${lastIter.toFixed(0)}`;
-      for (let i = 0; i < reconCanvases.length; i++) {
-        paintGrid(reconCanvases[i], result.decodeAt(snap, snap.z[i][0], snap.z[i][1]), 14);
+    // tapewasm 0.2.0 has no progress hook, so nothing was drawn above: replay
+    // the recorded snapshots instead.
+    if (elbo.length === 0) {
+      const n = r.mu.length, iters = r.snapshotIters;
+      for (let s = 0; s < iters.length; s++) {
+        $("status").textContent = `training done — replaying the recorded iterates: ${iters[s].toFixed(0)}/${iters.at(-1).toFixed(0)}`;
+        paintRecon(r.muSnapshots.subarray(s * n, (s + 1) * n));
+        await new Promise((res) => setTimeout(res, 90));
       }
-      await new Promise((r) => setTimeout(r, 90));
     }
-    // The recorded snapshots are raw iterates; the final fit is Polyak-averaged
-    // over the run's back half, so it settles a little past the last of them.
-    for (let i = 0; i < reconCanvases.length; i++) paintGrid(reconCanvases[i], result.recon[i], 14);
 
-    setupExplorer(result, LABELS);
+    // The snapshots are raw iterates; the final fit is Polyak-averaged over the
+    // run's back half, so it settles a little past the last of them.
+    const fit = decomposeMu(r.mu, SHAPE);
+    const decode = (z0, z1) => decodeWith(fit, z0, z1);
+    let mse = 0;
+    for (let i = 0; i < ORIGINAL_PIXELS.length; i++) {
+      const row = decode(fit.z[i][0], fit.z[i][1]);
+      paintGrid(reconCanvases[i], row, 14);
+      for (let j = 0; j < row.length; j++) mse += (row[j] - ORIGINAL_PIXELS[i][j]) ** 2;
+    }
+    mse /= ORIGINAL_PIXELS.length * SHAPE.D_out;
+
+    setupExplorer({ z: fit.z, decode, gridSize: 14 }, LABELS);
 
     $("status").innerHTML =
-      `trained in <b>${(result.trainMs / 1000).toFixed(1)}s</b> — ` +
-      `reconstruction MSE ${result.mse.toFixed(4)} (the earlier linear/PPCA version of this page: ~0.047). ` +
+      `trained in <b>${(r.trainMs / 1000).toFixed(1)}s</b> — ` +
+      `reconstruction MSE ${mse.toFixed(4)} (the earlier linear/PPCA version of this page: ~0.047). ` +
       `train again for a fresh seed.`;
   } catch (e) {
     $("status").textContent = "error: " + (e?.message ?? String(e));
