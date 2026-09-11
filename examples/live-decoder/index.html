@@ -7,13 +7,15 @@
   body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
          color: var(--ink); margin: 0; padding: 1rem 1.25rem; box-sizing: border-box;
          display: flex; flex-direction: column; gap: .75rem; overflow: hidden; }
-  h1 { font-size: 1.05rem; margin: 0; white-space: nowrap; }
+  h1 { font-size: 1.05rem; margin: 0; }
   h2 { font-size: .92rem; margin: 0 0 .3rem; }
   .dim { color: var(--dim); }
   code { white-space: nowrap; }
 
-  header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; flex: none; }
-  .desc { color: var(--dim); font-size: 12px; flex: 1 1 22rem; min-width: 0; }
+  a.home { color: var(--dim); font-size: 12px; text-decoration: none; flex: none; }
+  a.home:hover { color: var(--ink); }
+  header { display: flex; flex-direction: column; gap: .5rem; flex: none; }
+  .desc { color: var(--dim); font-size: 12px; max-width: 60rem; }
   details.desc summary { cursor: pointer; color: var(--ink); }
   details.desc[open] summary { margin-bottom: .3rem; }
   .bar { display: flex; gap: .9rem; align-items: center; flex: none; }
@@ -29,7 +31,7 @@
   /* Everything below the header fills the viewport; only the gallery's thumb
      grid scrolls, if 32 images don't fit at a comfortable size. */
   .layout { flex: 1 1 auto; min-height: 0; display: grid;
-            grid-template-columns: 230px 280px 1fr; gap: 1rem; }
+            grid-template-columns: 250px 230px 280px 1fr; gap: 1rem; }
   @media (max-width: 900px) {
     body { overflow: auto; }
     .layout { grid-template-columns: 1fr; }
@@ -37,6 +39,12 @@
 
   .panel { border: 1px solid var(--line); border-radius: 6px; padding: .8rem;
            min-height: 0; display: flex; flex-direction: column; }
+  .model { overflow-y: auto; }
+  #pgm { width: 100%; height: auto; flex: none; }
+  #pgm text { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--ink); }
+  #pgm text.note { font-size: 9.5px; fill: var(--dim); }
+  .eq { font: inherit; font-size: 11.5px; margin: .5rem 0; line-height: 1.6; }
+  .model p { font-size: 11.5px; margin: 0 0 .4rem; }
   .explorer { gap: .8rem; }
   .placeholder { color: var(--dim); font-size: 12px; }
   .explorer.ready .placeholder { display: none; }
@@ -53,8 +61,8 @@
   .match canvas { image-rendering: pixelated; width: 48px; height: 48px; border: 1px solid var(--line); }
 
   /* Before training the explorer panels are `display:none`, so without an
-     explicit column the gallery falls into the 230px track instead of 1fr. */
-  .gallery { grid-column: 3; min-width: 0; }
+     explicit column the gallery falls into a fixed track instead of 1fr. */
+  .gallery { grid-column: 4; min-width: 0; }
   @media (max-width: 900px) { .gallery { grid-column: 1; } }
   .thumbs { flex: 1 1 auto; min-height: 0; overflow-y: auto;
             display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
@@ -65,14 +73,15 @@
   .thumb .tag { font-size: 9.5px; color: var(--dim); }
 </style>
 
+<a class="home" href="../../">&larr; pymcwasm</a>
 <header>
   <h1>A tiny decoder, trained right here</h1>
   <details class="desc">
     <summary>compiled &amp; fit live via tapewasm's <code>compileTape()</code> + <code>advi()</code> &mdash; what's that mean?</summary>
-    Nothing on this page was precompiled: the button writes a tape by hand
-    (<code>z &rarr; Dense(2&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>),
-    compiles it, and fits it &mdash; the same wasm module the rest of pymcwasm
-    samples with. 32 real MNIST digits (posteriordb's subset), downsampled to
+    Nothing on this page was precompiled: <b>compile</b> writes a tape by hand
+    (<code>z &rarr; Dense(2&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>)
+    and compiles it to a wasm module, and <b>train</b> fits it &mdash; the same
+    wasm runtime the rest of pymcwasm samples with. 32 real MNIST digits (posteriordb's subset), downsampled to
     14&times;14 so training takes seconds, not tens of them. An earlier
     version fit <i>linear</i> probabilistic PCA instead; its reconstructions
     matched textbook 2-component PCA almost exactly &mdash; the problem, since
@@ -81,14 +90,68 @@
     that reconstruction error.
   </details>
   <div class="bar">
-    <button id="go">train the decoder</button>
-    <span id="status">idle — nothing trained yet</span>
+    <button id="compile">compile</button>
+    <button id="train" disabled>train</button>
+    <span id="status">idle — compile the model first</span>
   </div>
 </header>
 
 <svg id="spark" viewBox="0 0 600 34" hidden></svg>
 
 <div class="layout">
+  <div class="panel model">
+    <h2>Model</h2>
+    <svg id="pgm" viewBox="0 0 250 290" role="img" aria-label="Graphical model: z_i and the weights generate each pixel x_ij">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1f2933"/>
+        </marker>
+      </defs>
+      <g fill="none" stroke="#9aa5ae">
+        <rect x="8" y="8" width="160" height="270" rx="4"/>
+        <rect x="30" y="176" width="120" height="80" rx="4"/>
+      </g>
+      <text class="note" x="162" y="272" text-anchor="end">i = 1…32</text>
+      <text class="note" x="144" y="250" text-anchor="end">j = 1…196</text>
+      <g stroke="#1f2933" stroke-width="1.2" marker-end="url(#arr)">
+        <line x1="80" y1="67" x2="80" y2="108"/>
+        <line x1="80" y1="147" x2="80" y2="190"/>
+        <line x1="191" y1="128" x2="100" y2="128"/>
+        <line x1="191" y1="210" x2="100" y2="210"/>
+        <line x1="209" y1="260" x2="98" y2="217"/>
+      </g>
+      <g stroke="#1f2933" stroke-width="1.2">
+        <circle cx="80" cy="48" r="19" fill="#fff"/>
+        <circle cx="80" cy="128" r="19" fill="#fff"/>
+        <circle cx="80" cy="128" r="15" fill="none"/>
+        <circle cx="80" cy="210" r="19" fill="#d5dbe0"/>
+        <circle cx="212" cy="128" r="21" fill="#fff"/>
+        <circle cx="212" cy="210" r="21" fill="#fff"/>
+        <circle cx="212" cy="262" r="3" fill="#1f2933"/>
+      </g>
+      <g text-anchor="middle">
+        <text x="80" y="52">zᵢ</text>
+        <text x="80" y="132">hᵢ</text>
+        <text x="80" y="214">xᵢⱼ</text>
+        <text x="212" y="132" style="font-size:10px">W₁,b₁</text>
+        <text x="212" y="214" style="font-size:10px">W₂,b₂</text>
+        <text class="note" x="212" y="99">N(0, 1)</text>
+        <text class="note" x="212" y="181">N(0, 1)</text>
+        <text class="note" x="212" y="282">sd 0.15</text>
+      </g>
+      <text class="note" x="104" y="52">N(0, I₂)</text>
+      <text class="note" x="104" y="154">20 units</text>
+    </svg>
+    <pre class="eq">zᵢ  ~ N(0, I₂)
+hᵢ  = sigmoid(W₁ᵀzᵢ + b₁)
+μᵢ  = sigmoid(W₂ᵀhᵢ + b₂)
+xᵢⱼ ~ N(μᵢⱼ, 0.15²)</pre>
+    <p class="dim">Shaded: observed pixel. Double circle: deterministic.
+    Not a VAE &mdash; there is no encoder. Each <code>zᵢ</code> is its own
+    parameter, fit jointly with the weights by mean-field ADVI.</p>
+    <p id="compileInfo" class="dim">Not compiled yet.</p>
+  </div>
+
   <div class="panel explorer" id="explorer">
     <h2>Latent space</h2>
     <p class="placeholder">Train the decoder to explore it.</p>
@@ -121,7 +184,7 @@
 </div>
 
 <script type="module">
-import { trainDecoder, downsample14 } from "./app.js";
+import { compileDecoder, trainDecoder, downsample14 } from "./app.js";
 
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -165,8 +228,9 @@ function drawSpark(values) {
 }
 
 function setupExplorer(result, labels) {
-  const scatter = $("scatter");
-  scatter.innerHTML = "";
+  // A fresh node, so a retrain doesn't stack another set of drag listeners.
+  const scatter = $("scatter").cloneNode(false);
+  $("scatter").replaceWith(scatter);
   $("legend").innerHTML = "";
   $("explorer").classList.add("ready");
   $("explorer2").classList.add("ready");
@@ -260,47 +324,61 @@ function setupExplorer(result, labels) {
   setLatent(0, 0);
 }
 
-let ORIGINAL_PIXELS = null;
+let ORIGINAL_PIXELS = null, LABELS = null, compiled = null, reconCanvases = [];
 
-async function run() {
-  $("go").disabled = true;
-  $("thumbs").innerHTML = "";
-  $("explorer").classList.remove("ready");
-  $("explorer2").classList.remove("ready");
-  const tStart = performance.now();
+// compileTape() and advi() block the main thread, so let the status repaint first.
+const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+async function compile() {
+  $("compile").disabled = true;
+  $("status").textContent = "writing the tape and compiling it…";
+  await paint();
   try {
     const raw = await (await fetch("./digits.json")).json();
-    const data = {
-      pixels: raw.pixels.map(downsample14),
-      labels: raw.labels,
-      gridSize: 14,
-    };
-    ORIGINAL_PIXELS = data.pixels;
+    ORIGINAL_PIXELS = raw.pixels.map(downsample14);
+    LABELS = raw.labels;
 
-    // Build the thumbnail cells up front — the recon canvases start blank
-    // and get painted once per replayed snapshot below.
-    const reconCanvases = [];
-    for (let i = 0; i < data.pixels.length; i++) {
+    // The recon canvases start blank and get painted once per replayed snapshot.
+    $("thumbs").innerHTML = "";
+    reconCanvases = [];
+    for (let i = 0; i < ORIGINAL_PIXELS.length; i++) {
       const cell = document.createElement("div");
       cell.className = "thumb";
       const origC = document.createElement("canvas");
       const reconC = document.createElement("canvas");
-      paintGrid(origC, data.pixels[i], data.gridSize);
-      reconC.width = data.gridSize; reconC.height = data.gridSize;
+      paintGrid(origC, ORIGINAL_PIXELS[i], 14);
+      reconC.width = 14; reconC.height = 14;
       const tag = document.createElement("div");
       tag.className = "tag";
-      tag.textContent = `${data.labels[i]} · #${i}`;
+      tag.textContent = `${LABELS[i]} · #${i}`;
       cell.append(origC, reconC, tag);
       $("thumbs").appendChild(cell);
       reconCanvases.push(reconC);
     }
+    await paint();
 
-    const result = await trainDecoder({
-      pixels: data.pixels,
-      gridSize: data.gridSize,
-      onStatus: (s) => { $("status").textContent = s; },
-    });
+    compiled = await compileDecoder({ pixels: ORIGINAL_PIXELS, gridSize: 14 });
+    $("compileInfo").innerHTML =
+      `compiled in <b>${compiled.compileMs.toFixed(0)}ms</b> &mdash; ${compiled.nParams.toLocaleString()} params, ` +
+      `${compiled.tapeLines.toLocaleString()} tape lines, ${compiled.moduleBytes.toLocaleString()} byte module.`;
+    $("compile").textContent = "compiled";
+    $("status").textContent = "compiled — ready to train";
+    $("train").disabled = false;
+  } catch (e) {
+    $("status").textContent = "error: " + (e?.message ?? String(e));
+    $("compile").disabled = false;
+    console.error(e);
+  }
+}
 
+async function train() {
+  $("train").disabled = true;
+  $("explorer").classList.remove("ready");
+  $("explorer2").classList.remove("ready");
+  $("status").textContent = "training — 4,000 ADVI iterations × 3 MC samples, one wasm call…";
+  await paint();
+  try {
+    const result = trainDecoder(compiled);
     drawSpark(result.elboTrace);
 
     // Replay the snapshots so the reconstructions visibly converge over the run,
@@ -308,33 +386,30 @@ async function run() {
     const lastIter = result.snapshots.at(-1)?.iter;
     for (const snap of result.snapshots) {
       $("status").textContent = `replaying — iteration ${snap.iter.toFixed(0)}/${lastIter.toFixed(0)}`;
-      for (let i = 0; i < data.pixels.length; i++) {
-        paintGrid(reconCanvases[i], result.decodeAt(snap, snap.z[i][0], snap.z[i][1]), data.gridSize);
+      for (let i = 0; i < reconCanvases.length; i++) {
+        paintGrid(reconCanvases[i], result.decodeAt(snap, snap.z[i][0], snap.z[i][1]), 14);
       }
       await new Promise((r) => setTimeout(r, 90));
     }
     // The recorded snapshots are raw iterates; the final fit is Polyak-averaged
     // over the run's back half, so it settles a little past the last of them.
-    for (let i = 0; i < data.pixels.length; i++) {
-      paintGrid(reconCanvases[i], result.recon[i], data.gridSize);
-    }
+    for (let i = 0; i < reconCanvases.length; i++) paintGrid(reconCanvases[i], result.recon[i], 14);
 
-    setupExplorer(result, data.labels);
+    setupExplorer(result, LABELS);
 
-    const totalS = ((performance.now() - tStart) / 1000).toFixed(1);
     $("status").innerHTML =
-      `done in <b>${totalS}s</b> (compile ${result.compileMs.toFixed(0)}ms, ` +
-      `train ${(result.trainMs / 1000).toFixed(1)}s) — ${result.nParams} params, ` +
-      `${result.tapeLines.toLocaleString()} tape lines, ${result.moduleBytes.toLocaleString()} byte module. ` +
-      `reconstruction MSE ${result.mse.toFixed(4)} (the earlier linear/PPCA version of this page: ~0.047).`;
+      `trained in <b>${(result.trainMs / 1000).toFixed(1)}s</b> — ` +
+      `reconstruction MSE ${result.mse.toFixed(4)} (the earlier linear/PPCA version of this page: ~0.047). ` +
+      `train again for a fresh seed.`;
   } catch (e) {
     $("status").textContent = "error: " + (e?.message ?? String(e));
     console.error(e);
   } finally {
-    $("go").disabled = false;
+    $("train").disabled = false;
   }
 }
 
-$("go").addEventListener("click", run);
+$("compile").addEventListener("click", compile);
+$("train").addEventListener("click", train);
 window.done = true;
 </script>

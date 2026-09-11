@@ -155,23 +155,18 @@ function initVector({ N, D_out, H, totalParams, seed }) {
   return vec;
 }
 
-export async function trainDecoder({
-  pixels, gridSize, H = 20, numIters = 4000, mcSamples = 3, learningRate = 0.02,
-  seed = Date.now() & 0xffff, snapshotEvery = 60, onStatus,
-}) {
+/** Writes the tape (the pixels are baked in as constants) and compiles it to a
+ * wasm module; `trainDecoder` can then fit it any number of times. */
+export async function compileDecoder({ pixels, gridSize, H = 20, seed = 1 }) {
   await start();
   const N = pixels.length, D_out = gridSize * gridSize;
-  const shape = { N, D_out, H };
-
-  onStatus?.("writing the tape…");
   const { text, totalParams } = buildDecoderTape({
     N, D_out, H, sigma: 0.15, pixel: (i, j) => pixels[i][j], seed,
   });
 
-  onStatus?.(`compiling to a wasm module (${text.split("\n").length.toLocaleString()} tape lines)…`);
-  const tCompile0 = performance.now();
+  const t0 = performance.now();
   const built = compileTape(text);
-  const tCompile1 = performance.now();
+  const compileMs = performance.now() - t0;
 
   const aot = await WebAssembly.instantiate(built.wasm, {
     tapewasm: { memory: sharedMemory() },
@@ -180,12 +175,26 @@ export async function trainDecoder({
   setAotExports(aot.instance.exports);
   const sampler = new AotSampler(built.nParams, built.scratchInit, built.layoutId, []);
 
-  const initVec = initVector({ N, D_out, H, totalParams, seed: seed + 1 });
+  return {
+    sampler, pixels, gridSize, totalParams, shape: { N, D_out, H },
+    compileMs,
+    moduleBytes: built.wasm.length,
+    nParams: built.nParams,
+    tapeLines: text.split("\n").length,
+  };
+}
 
-  onStatus?.(`training — ${numIters.toLocaleString()} ADVI iterations × ${mcSamples} MC samples, one wasm call…`);
-  const tTrain0 = performance.now();
+export function trainDecoder(compiled, {
+  numIters = 4000, mcSamples = 3, learningRate = 0.02,
+  seed = Date.now() & 0xffff, snapshotEvery = 60,
+} = {}) {
+  const { sampler, pixels, gridSize, totalParams, shape } = compiled;
+  const { N, D_out } = shape;
+
+  const initVec = initVector({ ...shape, totalParams, seed: seed + 1 });
+  const t0 = performance.now();
   const result = sampler.advi(initVec, numIters, mcSamples, learningRate, BigInt(seed), snapshotEvery);
-  const tTrain1 = performance.now();
+  const trainMs = performance.now() - t0;
 
   const fit = decomposeMu(result.mu, shape);
   const decode = (z0, z1) => decodeWith(fit, z0, z1);
@@ -212,10 +221,6 @@ export async function trainDecoder({
     z: fit.z, recon, mse, decode, gridSize, snapshots,
     decodeAt: (snapshot, z0, z1) => decodeWith(snapshot, z0, z1),
     elboTrace: Array.from(result.elboTrace),
-    moduleBytes: built.wasm.length,
-    compileMs: tCompile1 - tCompile0,
-    trainMs: tTrain1 - tTrain0,
-    nParams: built.nParams,
-    tapeLines: text.split("\n").length,
+    trainMs,
   };
 }
