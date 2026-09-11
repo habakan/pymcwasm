@@ -4,7 +4,7 @@
 <style>
   :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --far:#c0392b; }
   body { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-         color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 64rem; }
+         color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 92rem; }
   h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
   .sub { color: var(--dim); margin: 0 0 1.4rem; max-width: 48rem; }
   .bar { display: flex; gap: 1.1rem; align-items: flex-end; flex-wrap: wrap;
@@ -22,11 +22,23 @@
              border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; }
   #cost { margin-left: auto; text-align: right; color: var(--dim); font-size: 12px; }
   #cost b { color: var(--ink); font-size: 19px; font-weight: 600; }
-  .param { display: flex; gap: 1rem; align-items: center; padding: .3rem 0;
-           border-bottom: 1px solid var(--line); }
-  .name { width: 9rem; } .nums { width: 12rem; color: var(--dim); font-size: 12px; }
+  .param { display: grid; grid-template-columns: 14rem auto auto; gap: 1rem; align-items: center;
+           padding: .3rem 0; border-bottom: 1px solid var(--line); }
+  .nums { color: var(--dim); font-size: 12px; }
   .nums b { color: var(--ink); font-weight: 600; }
   #status { color: var(--dim); } .err { color: var(--far); white-space: pre-wrap; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+  /* The diagnostics stay in view while the parameter list scrolls past them. */
+  #diag { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+  @media (max-width: 1150px) {
+    .cols { grid-template-columns: minmax(0, 1fr); }
+    #diag { position: static; max-height: none; }
+  }
+  #diag h2 { font-size: 1rem; margin: 0 0 .4rem; }
+  #diag-status { color: var(--dim); font-size: 12px; margin-left: .8rem; }
+  .az-summary { border-collapse: collapse; margin: 1rem 0; font-size: 12px; }
+  .az-summary th, .az-summary td { padding: .15rem .35rem; text-align: right;
+    border-bottom: 1px solid var(--line); }
   footer { margin-top: 2rem; color: var(--dim); font-size: 12px; }
 </style>
 
@@ -42,6 +54,7 @@
   <div><label for="preset">start from</label><select id="preset"></select></div>
   <div><label for="draws">draws</label><input id="draws" type="number" value="1000" min="100" step="100"></div>
   <div><label for="warmup">warmup</label><input id="warmup" type="number" value="1000" min="100" step="100"></div>
+  <div><label for="chains">chains</label><input id="chains" type="number" value="4" min="1" max="8"></div>
   <div><label for="seed">seed</label><input id="seed" type="number" value="42" min="1"></div>
   <div><label>&nbsp;</label><button id="compile" disabled>compile</button></div>
   <div><label>&nbsp;</label><button id="draw" class="ghost" disabled>sample again</button></div>
@@ -50,13 +63,29 @@
 
 <textarea id="src" spellcheck="false"></textarea>
 <p id="status">loading Pyodide…</p>
+<div class="cols">
 <div id="out"></div>
+
+<section id="diag">
+  <h2>ArviZ</h2>
+  <p class="sub">
+    <code>az.summary</code> and arviz-plots themselves: ArviZ came in with PyMC, so
+    the fit becomes an <code>InferenceData</code> in the model's own space. The
+    first press adds plotly for the figures, a few MB.
+  </p>
+  <button id="diag-go" disabled>run ArviZ</button><span id="diag-status"></span>
+  <div id="diag-out"></div>
+</section>
+</div>
 <footer id="foot"></footer>
 
 <script type="module">
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/pyodide.mjs";
 import { histogram, trace } from "./plot.js";
 import { PRESETS } from "./models.js";
+
+// plotly 7.0.0 ships plotly.js 4.0.0, and the figure JSON is read by the same version.
+const PLOTLY_JS = "https://cdn.plot.ly/plotly-4.0.0.min.js";
 
 const $ = (id) => document.getElementById(id);
 const say = (s) => { $("status").textContent = s; $("status").className = ""; };
@@ -125,16 +154,20 @@ async function draw() {
     py.globals.set("opts", py.toPy({
       draws: Number($("draws").value),
       warmup: Number($("warmup").value),
+      chains: Number($("chains").value),
       seed: Number($("seed").value),
     }));
     const fit = await py.runPythonAsync(`
 fit = await compiled.sample(**{k: int(v) for k, v in opts.items()})
 {"names": fit.names, "draws": fit.draws.ravel().tolist(), "n": len(fit.names),
+ "chains": fit.chain_draws.shape[0],
  "sample_ms": fit.ms, "compile_ms": fit.compile_ms, "lower_ms": fit.lower_ms,
  "bytes": fit.module_bytes}
 `);
     render(fit.toJs({ dict_converter: Object.fromEntries }));
     say("done");
+    $("diag-go").disabled = false;
+    if (diagReady) diagnose();
   } catch (e) {
     fail(String(e).split("\n").slice(-8).join("\n"));
   } finally {
@@ -161,19 +194,77 @@ function render(f) {
 
     const row = document.createElement("div");
     row.className = "param";
-    row.innerHTML = `<div class="name">${label}</div>` +
-      `<div class="nums">mean <b>${mean.toFixed(3)}</b> · sd ${Math.sqrt(sd).toFixed(3)}</div>`;
+    row.innerHTML = `<div><div class="name">${label}</div>` +
+      `<div class="nums">mean <b>${mean.toFixed(3)}</b> · sd ${Math.sqrt(sd).toFixed(3)}</div></div>`;
     const h = document.createElement("canvas");
     const t = document.createElement("canvas");
     row.append(h, t);
     out.append(row);
-    histogram(h, col);
-    trace(t, col);
+    histogram(h, col, { w: 200 });
+    trace(t, col.subarray(0, rows / f.chains), { w: 140 });
   });
   window.done = true;
 }
 
+let diagReady;
+const diagSay = (s) => { $("diag-status").textContent = s; };
+
+async function diagnose() {
+  $("diag-go").disabled = true;
+  try {
+    diagSay("loading plotly…");
+    diagReady ??= Promise.all([
+      new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = PLOTLY_JS;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error(`could not load ${PLOTLY_JS}`));
+        document.head.append(s);
+      }),
+      (async () => {
+        const mp = py.pyimport("micropip");
+        await mp.install("plotly==7.0.0");
+        await mp.install("webcolors");
+      })(),
+    ]);
+    await diagReady;
+    diagSay("ArviZ…");
+    const t0 = performance.now();
+    const r = await py.runPythonAsync(`
+import arviz as az, arviz_plots as azp
+idata = fit.to_inference_data(save_warmup=False)
+{"summary": az.summary(idata).to_html(border=0, classes="az-summary"),
+ "plots": [f(idata, backend="plotly").viz["figure"].item().to_json()
+           for f in (azp.plot_forest, azp.plot_rank, azp.plot_trace_dist)]}
+`);
+    const d = r.toJs({ dict_converter: Object.fromEntries });
+    r.destroy();
+    const out = $("diag-out");
+    out.innerHTML = d.summary;
+    for (const json of d.plots) {
+      const fig = JSON.parse(json);
+      const div = document.createElement("div");
+      out.append(div);
+      // arviz-plots sizes for 800-1200 px; scale to the column, keeping its aspect ratio.
+      const scale = div.clientWidth / fig.layout.width;
+      fig.layout.height = Math.max(200, fig.layout.height * scale);
+      delete fig.layout.width;
+      fig.layout.autosize = true;
+      fig.layout.margin = { l: 50, r: 10, t: 30, b: 40 };
+      await Plotly.newPlot(div, fig.data, fig.layout, { responsive: true, displaylogo: false });
+    }
+    diagSay(`${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    window.diagDone = true;
+  } catch (e) {
+    diagSay(String(e).split("\n").slice(-4).join(" "));
+    window.failed = String(e);
+  } finally {
+    $("diag-go").disabled = false;
+  }
+}
+
 $("compile").addEventListener("click", compile);
 $("draw").addEventListener("click", draw);
+$("diag-go").addEventListener("click", diagnose);
 $("foot").textContent = navigator.userAgent;
 </script>
