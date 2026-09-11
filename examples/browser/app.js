@@ -22,7 +22,7 @@ const MATH = {
   lgamma: () => NaN, digamma: () => NaN, phi: () => NaN,
 };
 
-export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = {}) {
+export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, chains = 4 } = {}) {
   await start();
   const meta = await (await fetch(`../../artifacts/${name}/meta.json`)).json();
   const bytes = await (await fetch(`../../artifacts/${name}/model.wasm`)).arrayBuffer();
@@ -33,25 +33,39 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42 } = 
   });
   setAotExports(aot.instance.exports);
 
-  const sampler = new AotSampler(
-    meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames,
-  );
+  const n = meta.nParams;
+  const runs = [];
   const t0 = performance.now();
-  const flat = sampler.sample(new Float64Array(meta.initialPoint), warmup, draws, BigInt(seed));
+  for (let c = 0; c < chains; c++) {
+    // One sampler per chain, seeded apart, as the Python side does.
+    const sampler = new AotSampler(
+      meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames,
+    );
+    const args = [new Float64Array(meta.initialPoint), warmup, draws, BigInt(seed + c)];
+    // tapewasm 0.2.0 has only `sample`; `sampleWithStats` adds the divergences.
+    const r = typeof sampler.sampleWithStats === "function" ? sampler.sampleWithStats(...args, c) : null;
+    const flat = r ? r.draws : sampler.sample(...args);
+    // `flat` may be a view into wasm memory that the next chain overwrites.
+    runs.push({ draws: flat.slice(warmup * n), diverging: r ? r.diverging.slice(warmup) : null });
+    sampler.free();
+  }
   const ms = performance.now() - t0;
 
-  const n = meta.nParams;
-  const post = flat.subarray(warmup * n);
   const mean = new Array(n).fill(0);
-  for (let i = 0; i < draws; i++) {
-    for (let k = 0; k < n; k++) mean[k] += post[i * n + k] / draws;
+  for (const { draws: post } of runs) {
+    for (let i = 0; i < draws; i++) {
+      for (let k = 0; k < n; k++) mean[k] += post[i * n + k] / (draws * chains);
+    }
   }
-  // `post` is a view into wasm memory; the caller keeps it, so hand over a copy.
-  return { meta, mean, draws: post.slice(), nDraws: draws, ms, moduleBytes: bytes.byteLength };
+  return {
+    meta, mean, chains: runs.map((r) => r.draws),
+    diverging: runs.every((r) => r.diverging) ? runs.map((r) => r.diverging) : undefined,
+    nDraws: draws, nChains: chains, ms, moduleBytes: bytes.byteLength,
+  };
 }
 
 export async function compare(name, options) {
-  const { meta, mean, draws, nDraws, ms, moduleBytes } = await sample(name, options);
+  const { meta, mean, ms, moduleBytes } = await sample(name, options);
   const reference = await (await fetch(`../../artifacts/${name}/reference.json`)).json();
   const rows = meta.paramNames.map((label, k) => {
     const ref = reference[label];
@@ -61,7 +75,7 @@ export async function compare(name, options) {
     };
   });
   return {
-    name, ms, moduleBytes, rows, draws, nDraws, meta,
+    name, ms, moduleBytes, rows, meta,
     worst: Math.max(...rows.map((r) => r.gap)),
   };
 }
