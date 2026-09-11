@@ -4,7 +4,7 @@
 <style>
   :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --ok:#2d7a4b; --far:#c0392b; }
   body { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-         color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 64rem; }
+         color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 92rem; }
   h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
   .sub { color: var(--dim); margin: 0 0 1.5rem; max-width: 46rem; }
   .bar { display: flex; gap: 1.1rem; align-items: flex-end; flex-wrap: wrap;
@@ -21,22 +21,28 @@
   #timing b { color: var(--ink); font-size: 20px; font-weight: 600; }
   .legend { color: var(--dim); font-size: 12px; margin: 0 0 1.2rem; }
   .legend i { color: var(--far); font-style: normal; }
-  .param { display: flex; gap: 1rem; align-items: center; padding: .3rem 0;
-           border-bottom: 1px solid var(--line); }
-  .name { width: 9rem; }
-  .nums { width: 16rem; color: var(--dim); font-size: 12px; }
+  .param { display: grid; grid-template-columns: 16rem auto auto; gap: 1rem; align-items: center;
+           padding: .3rem 0; border-bottom: 1px solid var(--line); }
+  .nums { color: var(--dim); font-size: 12px; }
   .nums b { color: var(--ink); font-weight: 600; }
   .gap.ok { color: var(--ok); } .gap.far { color: var(--far); }
   footer { margin-top: 2rem; color: var(--dim); font-size: 12px; }
-  #diag { margin-top: 2rem; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+  /* The diagnostics stay in view while the parameter list scrolls past them. */
+  #diag { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+  @media (max-width: 1150px) {
+    .cols { grid-template-columns: minmax(0, 1fr); }
+    #diag { position: static; max-height: none; }
+  }
   #diag h2 { font-size: 1rem; margin: 0 0 .4rem; }
   #diag-status { color: var(--dim); font-size: 12px; margin-left: .8rem; }
   .posteriorwasm-summary { border-collapse: collapse; margin: 1rem 0; font-size: 12px; }
-  .posteriorwasm-summary th, .posteriorwasm-summary td { padding: .15rem .6rem; text-align: right;
+  .posteriorwasm-summary th, .posteriorwasm-summary td { padding: .15rem .35rem; text-align: right;
     border-bottom: 1px solid var(--line); }
   .posteriorwasm-summary th[scope=row] { text-align: left; font-weight: 400; }
   .chains { display: flex; gap: 1rem; align-items: center; padding: .3rem 0;
             border-bottom: 1px solid var(--line); }
+  .chains .name { width: 9rem; }
 </style>
 
 <h1>A PyMC model, compiled ahead of time, sampled in this browser</h1>
@@ -62,6 +68,7 @@
   nutpie put the mean for the same model.
 </p>
 
+<div class="cols">
 <div id="out"></div>
 
 <section id="diag">
@@ -74,6 +81,7 @@
   <button id="diag-go">run ArviZ</button><span id="diag-status"></span>
   <div id="diag-out"></div>
 </section>
+</div>
 <footer id="foot"></footer>
 
 <script type="module">
@@ -141,16 +149,16 @@ async function run() {
       const row = document.createElement("div");
       row.className = "param";
       row.innerHTML =
-        `<div class="name">${label}</div>` +
+        `<div><div class="name">${label}</div>` +
         `<div class="nums">mean <b>${r.mean[k].toFixed(3)}</b> · nutpie ` +
         `${ref[label].mean.toFixed(3)} · <span class="gap ${gap > 0.3 ? "far" : "ok"}">` +
-        `${gap.toFixed(2)} sd apart</span></div>`;
+        `${gap.toFixed(2)} sd apart</span></div></div>`;
       const h = document.createElement("canvas");
       const t = document.createElement("canvas");
       row.append(h, t);
       out.append(row);
-      histogram(h, col, { refMean: ref[label].mean });
-      trace(t, col.subarray(0, r.nDraws));
+      histogram(h, col, { refMean: ref[label].mean, w: 200 });
+      trace(t, col.subarray(0, r.nDraws), { w: 140 });
     });
     if (analyzer) diagnose();
   } catch (e) {
