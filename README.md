@@ -66,6 +66,10 @@ tens of seconds. Compiling a small model then takes about a second, and drawing
 Nothing Python-shaped reaches the browser. A build step turns a model into a
 5–35 KB wasm module, and the page loads that and a sampler.
 
+The page samples four chains, and its ArviZ button diagnoses them with
+[posteriorwasm](https://github.com/habakan/posteriorwasm): arviz-stats on
+Pyodide in a worker, about 24 MB fetched only when pressed.
+
 ```
 npm start        # then open /
 npm test         # the same seven models in three engines, checked against nutpie

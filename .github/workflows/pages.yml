@@ -46,6 +46,7 @@ jobs:
           cp -r examples artifacts site/
           mkdir -p site/pkg && cp -r src/pymcwasm site/pkg/
           mkdir -p site/vendor && cp -r node_modules/tapewasm/* site/vendor/
+          mkdir -p site/posteriorwasm && cp -r node_modules/posteriorwasm/* site/posteriorwasm/
           cp index.html site/
 
       - uses: actions/upload-pages-artifact@v4

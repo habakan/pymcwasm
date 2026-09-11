@@ -24,6 +24,9 @@ const vendor = process.env.STANWASM
   : resolve(repo, "node_modules/tapewasm");
 
 function locate(path) {
+  if (path.startsWith("/posteriorwasm/")) {
+    return resolve(repo, "node_modules", "." + path);
+  }
   if (path.startsWith("/vendor/")) {
     return resolve(vendor, "." + path.slice("/vendor".length));
   }

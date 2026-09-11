@@ -28,19 +28,29 @@
   .nums b { color: var(--ink); font-weight: 600; }
   .gap.ok { color: var(--ok); } .gap.far { color: var(--far); }
   footer { margin-top: 2rem; color: var(--dim); font-size: 12px; }
+  #diag { margin-top: 2rem; }
+  #diag h2 { font-size: 1rem; margin: 0 0 .4rem; }
+  #diag-status { color: var(--dim); font-size: 12px; margin-left: .8rem; }
+  .posteriorwasm-summary { border-collapse: collapse; margin: 1rem 0; font-size: 12px; }
+  .posteriorwasm-summary th, .posteriorwasm-summary td { padding: .15rem .6rem; text-align: right;
+    border-bottom: 1px solid var(--line); }
+  .posteriorwasm-summary th[scope=row] { text-align: left; font-weight: 400; }
+  .chains { display: flex; gap: 1rem; align-items: center; padding: .3rem 0;
+            border-bottom: 1px solid var(--line); }
 </style>
 
 <h1>A PyMC model, compiled ahead of time, sampled in this browser</h1>
 <p class="sub">
-  No server sampled this and no Python is running here — the page holds a wasm
+  No server sampled this and no Python ran to sample it — the page holds a wasm
   module built from a PyMC log density and a NUTS sampler, and nothing else.
-  Press sample again and the chain runs from scratch.
+  Press sample again and the chains run from scratch.
 </p>
 
 <div class="bar">
   <div><label for="model">model</label><select id="model"></select></div>
   <div><label for="draws">draws</label><input id="draws" type="number" value="1000" min="100" step="100"></div>
   <div><label for="warmup">warmup</label><input id="warmup" type="number" value="1000" min="100" step="100"></div>
+  <div><label for="chains">chains</label><input id="chains" type="number" value="4" min="1" max="8"></div>
   <div><label for="seed">seed</label><input id="seed" type="number" value="42" min="1"></div>
   <div><label>&nbsp;</label><button id="go">sample</button></div>
   <div id="timing"></div>
@@ -53,14 +63,52 @@
 </p>
 
 <div id="out"></div>
+
+<section id="diag">
+  <h2>ArviZ diagnostics</h2>
+  <p class="sub">
+    R-hat, ESS and the rank plots from arviz-stats itself, running on Pyodide in a
+    worker. The first press downloads about 24 MB; after that every new sample is
+    diagnosed as it lands.
+  </p>
+  <button id="diag-go">run ArviZ</button><span id="diag-status"></span>
+  <div id="diag-out"></div>
+</section>
 <footer id="foot"></footer>
 
 <script type="module">
 import { MODELS, sample } from "./app.js";
 import { histogram, trace } from "./plot.js";
+import { createAnalyzer, summaryTable, forestPlot, rankPlot, tracePlot } from "../../posteriorwasm/index.js";
 
 const $ = (id) => document.getElementById(id);
 for (const m of MODELS) $("model").add(new Option(m, m));
+
+let last;
+let analyzer;
+
+async function diagnose() {
+  if (!last) return;
+  $("diag-go").disabled = true;
+  try {
+    analyzer ??= createAnalyzer({ onProgress: (s) => { $("diag-status").textContent = `loading ${s}…`; } });
+    await analyzer.ready;
+    $("diag-status").textContent = "computing…";
+    const r = last;
+    const t0 = performance.now();
+    const res = await analyzer.analyze({ names: r.meta.paramNames, chains: r.chains, diverging: r.diverging });
+    if (r !== last) return;
+    const div = res.diverging ? ` · ${res.diverging.reduce((a, b) => a + b, 0)} divergences` : "";
+    $("diag-status").textContent = `${res.nChains} chains × ${res.nDraws} draws, ${(performance.now() - t0).toFixed(0)} ms${div}`;
+    $("diag-out").innerHTML = summaryTable(res) + forestPlot(res, { width: 480, labelWidth: 150 }) +
+      res.names.map((name, k) =>
+        `<div class="chains"><div class="name">${name}</div>${rankPlot(res, k)}${tracePlot(res, k)}</div>`).join("");
+  } catch (e) {
+    $("diag-status").textContent = String(e);
+  } finally {
+    $("diag-go").disabled = false;
+  }
+}
 
 async function run() {
   $("go").disabled = true;
@@ -70,19 +118,24 @@ async function run() {
     const r = await sample(name, {
       draws: Number($("draws").value),
       warmup: Number($("warmup").value),
+      chains: Number($("chains").value),
       seed: Number($("seed").value),
     });
     const ref = await (await fetch(`../../artifacts/${name}/reference.json`)).json();
+    last = r;
 
     $("timing").innerHTML =
-      `<b>${r.ms.toFixed(0)} ms</b><br>${(r.nDraws / (r.ms / 1000)).toFixed(0)} draws/s ` +
+      `<b>${r.ms.toFixed(0)} ms</b><br>${(r.nDraws * r.nChains / (r.ms / 1000)).toFixed(0)} draws/s ` +
       `· ${(r.moduleBytes / 1024).toFixed(1)} KB module`;
 
     const out = $("out");
     out.textContent = "";
+    const n = r.meta.paramNames.length;
     r.meta.paramNames.forEach((label, k) => {
-      const col = new Float64Array(r.nDraws);
-      for (let i = 0; i < r.nDraws; i++) col[i] = r.draws[i * r.meta.nParams + k];
+      const col = new Float64Array(r.nDraws * r.nChains);
+      r.chains.forEach((c, j) => {
+        for (let i = 0; i < r.nDraws; i++) col[j * r.nDraws + i] = c[i * n + k];
+      });
       const gap = Math.abs(r.mean[k] - ref[label].mean) / Math.max(ref[label].sd, 1e-12);
 
       const row = document.createElement("div");
@@ -97,8 +150,9 @@ async function run() {
       row.append(h, t);
       out.append(row);
       histogram(h, col, { refMean: ref[label].mean });
-      trace(t, col);
+      trace(t, col.subarray(0, r.nDraws));
     });
+    if (analyzer) diagnose();
   } catch (e) {
     $("timing").textContent = "";
     $("out").textContent = String(e);
@@ -108,6 +162,7 @@ async function run() {
 }
 
 $("go").addEventListener("click", run);
+$("diag-go").addEventListener("click", diagnose);
 $("model").addEventListener("change", run);
 $("foot").textContent = navigator.userAgent;
 await run();

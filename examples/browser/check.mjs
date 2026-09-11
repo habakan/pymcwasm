@@ -31,7 +31,22 @@ for (const name of wanted) {
     for (const m of MODELS) out.push(await compare(m));
     return out;
   });
+  // ArviZ over the four chains, through posteriorwasm; Pyodide comes from jsDelivr.
+  const diag = await page.evaluate(async () => {
+    const { sample } = await import("/examples/browser/app.js");
+    const { createAnalyzer } = await import("/posteriorwasm/index.js");
+    const r = await sample("linear_regression");
+    const analyzer = createAnalyzer();
+    const res = await analyzer.analyze({ names: r.meta.paramNames, chains: r.chains, diverging: r.diverging });
+    analyzer.terminate();
+    return res.summary;
+  });
   await browser.close();
+
+  const worstRhat = Math.max(...diag.map((s) => s.rHat));
+  const leastEss = Math.min(...diag.map((s) => s.essBulk));
+  console.log(`${name.padEnd(9)} ArviZ on linear_regression: r_hat ≤ ${worstRhat.toFixed(3)}, ess_bulk ≥ ${leastEss.toFixed(0)}`);
+  if (!(worstRhat < 1.01)) failed = true;
 
   if (errors.length) {
     console.log(`${name.padEnd(9)} page errors: ${errors.join("; ")}`);
