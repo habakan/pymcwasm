@@ -15,9 +15,7 @@
   a.home { color: var(--dim); font-size: 12px; text-decoration: none; flex: none; }
   a.home:hover { color: var(--ink); }
   header { display: flex; flex-direction: column; gap: .5rem; flex: none; }
-  .desc { color: var(--dim); font-size: 12px; max-width: 60rem; }
-  details.desc summary { cursor: pointer; color: var(--ink); }
-  details.desc[open] summary { margin-bottom: .3rem; }
+  .desc { color: var(--dim); font-size: 12px; max-width: 60rem; margin: 0; }
   .bar { display: flex; gap: .9rem; align-items: center; flex: none; }
   button { font: inherit; padding: .35rem 1rem; border: 1px solid var(--ink);
            border-radius: 4px; background: var(--ink); color: #fff; cursor: pointer; }
@@ -83,19 +81,13 @@
 <a class="home" href="../../">&larr; pymcwasm</a>
 <header>
   <h1>A tiny decoder, trained right here</h1>
-  <details class="desc">
-    <summary>compiled &amp; fit live via tapewasm's <code>compileTape()</code> + <code>advi()</code> &mdash; what's that mean?</summary>
-    Nothing on this page was precompiled: <b>compile</b> writes a tape by hand
+  <p class="desc">
+    Nothing here was precompiled. <b>compile</b> writes the tape by hand
     (<code>z &rarr; Dense(4&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>)
-    and compiles it to a wasm module, and <b>train</b> fits it &mdash; the same
-    wasm runtime the rest of pymcwasm samples with. 32 real MNIST digits (posteriordb's subset), downsampled to
-    14&times;14 so training takes seconds, not tens of them. An earlier
-    version fit <i>linear</i> probabilistic PCA instead; its reconstructions
-    matched textbook 2-component PCA almost exactly &mdash; the problem, since
-    2 linear components only explain ~27% of the variance across 8 digit
-    classes. This nonlinear decoder, with a 4D latent space, cuts that
-    reconstruction error by more than an order of magnitude.
-  </details>
+    and emits a wasm module through tapewasm's <code>compileTape()</code>;
+    <b>train</b> fits it with <code>advi()</code>, in a worker. 32 MNIST digits
+    (posteriordb's subset), downsampled to 14&times;14 so a fit takes seconds.
+  </p>
   <div class="bar">
     <button id="compile">compile</button>
     <button id="train" disabled>train</button>
