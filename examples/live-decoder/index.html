@@ -375,7 +375,7 @@ async function train() {
   $("train").disabled = true;
   $("explorer").classList.remove("ready");
   $("explorer2").classList.remove("ready");
-  $("status").textContent = "training — 4,000 ADVI iterations × 3 MC samples, one wasm call…";
+  $("status").textContent = "training — all 4,000 ADVI iterations × 3 MC samples run in one blocking wasm call; nothing redraws until it returns…";
   await paint();
   try {
     const result = trainDecoder(compiled);
@@ -385,7 +385,7 @@ async function train() {
     // rather than only showing the settled fit.
     const lastIter = result.snapshots.at(-1)?.iter;
     for (const snap of result.snapshots) {
-      $("status").textContent = `replaying — iteration ${snap.iter.toFixed(0)}/${lastIter.toFixed(0)}`;
+      $("status").textContent = `training done — replaying the recorded iterates: ${snap.iter.toFixed(0)}/${lastIter.toFixed(0)}`;
       for (let i = 0; i < reconCanvases.length; i++) {
         paintGrid(reconCanvases[i], result.decodeAt(snap, snap.z[i][0], snap.z[i][1]), 14);
       }
