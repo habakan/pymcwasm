@@ -1,4 +1,4 @@
-// Drives the page in a real browser: clicks train, waits for it to finish,
+// Drives the page in a real browser: clicks compile then train, waits for it to finish,
 // and fails if the fit lands far worse than the decoder reliably reaches.
 
 import { chromium, firefox, webkit } from "playwright";
@@ -8,9 +8,9 @@ const PORT = Number(process.env.PORT ?? 8140);
 const wanted = (process.env.BROWSERS ?? "chromium,firefox,webkit").split(",");
 const engines = { chromium, firefox, webkit };
 
-// Measured range across runs is ~0.020-0.026; the linear PPCA this replaced
+// Measured range across runs is ~0.0015-0.003; the linear PPCA this replaced
 // never got below ~0.047, so this is a generous ceiling, not a tight bound.
-const MAX_MSE = 0.035;
+const MAX_MSE = 0.006;
 
 let failed = false;
 for (const name of wanted) {
@@ -29,9 +29,11 @@ for (const name of wanted) {
   await page.goto(`http://127.0.0.1:${PORT}/examples/live-decoder/`);
 
   const t0 = Date.now();
-  await page.click("#go");
+  await page.click("#compile");
+  await page.waitForFunction(() => !document.getElementById("train").disabled, null, { timeout: 60_000 });
+  await page.click("#train");
   await page.waitForFunction(
-    () => document.getElementById("status").textContent.startsWith("done in"),
+    () => document.getElementById("status").textContent.startsWith("trained in"),
     null,
     { timeout: 60_000 },
   );

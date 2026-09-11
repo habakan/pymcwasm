@@ -60,8 +60,8 @@ for (const name of wanted) {
     `${slow.toFixed(0)} ms total`,
   );
   for (const r of results) {
-    if (r.worst > 0.3) {
-      console.log(`    ${r.name}: ${r.worst.toFixed(3)} sd`);
+    if (r.worst > r.tolerance) {
+      console.log(`    ${r.name}: ${r.worst.toFixed(3)} sd, over ${r.tolerance}`);
       failed = true;
     }
   }

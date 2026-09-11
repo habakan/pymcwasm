@@ -42,11 +42,9 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
       meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames,
     );
     const args = [new Float64Array(meta.initialPoint), warmup, draws, BigInt(seed + c)];
-    // tapewasm 0.2.0 has only `sample`; `sampleWithStats` adds the divergences.
-    const r = typeof sampler.sampleWithStats === "function" ? sampler.sampleWithStats(...args, c) : null;
-    const flat = r ? r.draws : sampler.sample(...args);
-    // `flat` may be a view into wasm memory that the next chain overwrites.
-    runs.push({ draws: flat.slice(warmup * n), diverging: r ? r.diverging.slice(warmup) : null });
+    const r = sampler.sampleWithStats(...args, c);
+    // `draws` may be a view into wasm memory that the next chain overwrites.
+    runs.push({ draws: r.draws.slice(warmup * n), diverging: r.diverging.slice(warmup) });
     sampler.free();
   }
   const ms = performance.now() - t0;
@@ -59,10 +57,15 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
   }
   return {
     meta, mean, chains: runs.map((r) => r.draws),
-    diverging: runs.every((r) => r.diverging) ? runs.map((r) => r.diverging) : undefined,
+    diverging: runs.map((r) => r.diverging),
     nDraws: draws, nChains: chains, ms, moduleBytes: bytes.byteLength,
   };
 }
+
+/** How far a parameter's mean may sit from the reference, in its sds.
+ * eight_schools is written centred: in the funnel the two samplers disagree by
+ * more than anywhere else, and the reference's own error is larger there too. */
+export const tolerance = (name) => (name === "eight_schools" ? 0.5 : 0.3);
 
 export async function compare(name, options) {
   const { meta, mean, ms, moduleBytes } = await sample(name, options);
@@ -77,5 +80,6 @@ export async function compare(name, options) {
   return {
     name, ms, moduleBytes, rows, meta,
     worst: Math.max(...rows.map((r) => r.gap)),
+    tolerance: tolerance(name),
   };
 }
