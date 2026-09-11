@@ -96,29 +96,43 @@ async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH):
     return await build(tw, tape, _MATH_JS), tw
 
 
-async def draw(handle, tw, init, warmup, draws, seed, param_names):
+async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
     """Sample a module compiled earlier.
 
     `setAotExports` binds one module per page, so this re-binds before every
     run — two models compiled in one page would otherwise take each other's
     buffers, which the layout id refuses rather than silently mixing.
+
+    A tapewasm with `sampleWithStats` also returns each draw's sampler
+    statistics; an older one returns the draws alone, and `stats` is None.
     """
     from pyodide.code import run_js
 
     sampler = run_js(
         """
-        ((tw, h, init, warmup, draws, seed, names) => {
+        ((tw, h, init, warmup, draws, seed, names, chain) => {
             tw.setAotExports(h.exports);
             const s = new tw.AotSampler(
                 h.built.nParams, h.built.scratchInit, h.built.layoutId, names,
             );
             const t0 = performance.now();
-            const flat = s.sample(new Float64Array(init), warmup, draws, BigInt(seed));
-            return { draws: Array.from(flat), ms: performance.now() - t0,
+            const args = [new Float64Array(init), warmup, draws, BigInt(seed)];
+            let flat, stats = null;
+            if (typeof s.sampleWithStats === "function") {
+                const r = s.sampleWithStats(...args, chain);
+                flat = r.draws;
+                stats = { diverging: Array.from(r.diverging), tuning: Array.from(r.tuning),
+                          step_size: Array.from(r.stepSize), n_steps: Array.from(r.numSteps),
+                          lp: Array.from(r.lp) };
+            } else {
+                flat = s.sample(...args);
+            }
+            return { draws: Array.from(flat), stats, ms: performance.now() - t0,
                      nParams: h.built.nParams };
         })
         """
     )
     return sampler(
         tw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
+        int(chain),
     ).to_py()
