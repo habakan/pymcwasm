@@ -42,11 +42,9 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
       meta.nParams, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames,
     );
     const args = [new Float64Array(meta.initialPoint), warmup, draws, BigInt(seed + c)];
-    // tapewasm 0.2.0 has only `sample`; `sampleWithStats` adds the divergences.
-    const r = typeof sampler.sampleWithStats === "function" ? sampler.sampleWithStats(...args, c) : null;
-    const flat = r ? r.draws : sampler.sample(...args);
-    // `flat` may be a view into wasm memory that the next chain overwrites.
-    runs.push({ draws: flat.slice(warmup * n), diverging: r ? r.diverging.slice(warmup) : null });
+    const r = sampler.sampleWithStats(...args, c);
+    // `draws` may be a view into wasm memory that the next chain overwrites.
+    runs.push({ draws: r.draws.slice(warmup * n), diverging: r.diverging.slice(warmup) });
     sampler.free();
   }
   const ms = performance.now() - t0;
@@ -59,7 +57,7 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
   }
   return {
     meta, mean, chains: runs.map((r) => r.draws),
-    diverging: runs.every((r) => r.diverging) ? runs.map((r) => r.diverging) : undefined,
+    diverging: runs.map((r) => r.diverging),
     nDraws: draws, nChains: chains, ms, moduleBytes: bytes.byteLength,
   };
 }

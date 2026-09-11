@@ -188,8 +188,7 @@ export async function compileDecoder({ pixels, gridSize, L = 4, H = 20, seed = 1
   };
 }
 
-/** One `advi()` run. `onSnapshot(iter, mu, elbo)` fires as it goes on a tapewasm
- * that has the hook; 0.2.0 ignores it and only `muSnapshots` come back. */
+/** One `advi()` run; `onSnapshot(iter, mu, elbo)` fires at each snapshot as it goes. */
 export function trainDecoder(compiled, {
   numIters = 4000, mcSamples = 3, learningRate = 0.02,
   seed = Date.now() & 0xffff, snapshotEvery = 60, onSnapshot,
@@ -198,8 +197,5 @@ export function trainDecoder(compiled, {
   const initVec = initVector({ ...shape, totalParams, seed: seed + 1 });
   const t0 = performance.now();
   const r = sampler.advi(initVec, numIters, mcSamples, learningRate, BigInt(seed), snapshotEvery, onSnapshot);
-  return {
-    mu: r.mu, muSnapshots: r.muSnapshots, snapshotIters: r.snapshotIters,
-    elboTrace: r.elboTrace, trainMs: performance.now() - t0,
-  };
+  return { mu: r.mu, trainMs: performance.now() - t0 };
 }

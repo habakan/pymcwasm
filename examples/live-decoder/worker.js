@@ -16,7 +16,7 @@ self.onmessage = async ({ data }) => {
         onSnapshot: (iter, mu, elbo) =>
           self.postMessage({ type: "snapshot", iter, mu, elbo }, [mu.buffer, elbo.buffer]),
       });
-      self.postMessage({ type: "trained", ...r }, [r.mu.buffer, r.muSnapshots.buffer, r.elboTrace.buffer]);
+      self.postMessage({ type: "trained", ...r }, [r.mu.buffer]);
     }
   } catch (e) {
     self.postMessage({ type: "error", message: e?.message ?? String(e) });
