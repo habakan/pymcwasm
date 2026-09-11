@@ -9,7 +9,7 @@
     "test:pyodide": "node examples/pyodide/check.mjs"
   },
   "dependencies": {
-    "posteriorwasm": "github:habakan/posteriorwasm#71f23209953e8fc0abb0e09f2d18c6f73bdda2d9",
+    "posteriorwasm": "github:habakan/posteriorwasm#ca407445c7fe59741baca0acf1d527c9c8cfaaf3",
     "tapewasm": "^0.2.0"
   },
   "devDependencies": {
