@@ -53,6 +53,13 @@
   #scatter { width: 100%; height: auto; cursor: crosshair; touch-action: none; flex: none; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10.5px; color: var(--dim); margin-top: .4rem; }
   .legend .sw { display: inline-flex; align-items: center; gap: 4px; }
+  .axes { font-size: 12px; color: var(--dim); margin-bottom: .3rem; }
+  .axes select { font: inherit; padding: 0 .2rem; }
+  #sliders { margin-top: .6rem; }
+  .slider { display: grid; grid-template-columns: 2.6rem 1fr 2.6rem; align-items: center;
+            gap: .4rem; font-size: 12px; color: var(--dim); }
+  .slider input { width: 100%; }
+  .slider b { color: var(--ink); text-align: right; }
   .legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   #decodeCanvas { image-rendering: pixelated; width: 100%; aspect-ratio: 1; border: 1px solid var(--line); }
   .readout { font-size: 12px; color: var(--dim); margin-top: .5rem; }
@@ -79,15 +86,15 @@
   <details class="desc">
     <summary>compiled &amp; fit live via tapewasm's <code>compileTape()</code> + <code>advi()</code> &mdash; what's that mean?</summary>
     Nothing on this page was precompiled: <b>compile</b> writes a tape by hand
-    (<code>z &rarr; Dense(2&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>)
+    (<code>z &rarr; Dense(4&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>)
     and compiles it to a wasm module, and <b>train</b> fits it &mdash; the same
     wasm runtime the rest of pymcwasm samples with. 32 real MNIST digits (posteriordb's subset), downsampled to
     14&times;14 so training takes seconds, not tens of them. An earlier
     version fit <i>linear</i> probabilistic PCA instead; its reconstructions
     matched textbook 2-component PCA almost exactly &mdash; the problem, since
     2 linear components only explain ~27% of the variance across 8 digit
-    classes. This nonlinear decoder, same 2D latent space, cuts that
-    reconstruction error about eightfold.
+    classes. This nonlinear decoder, with a 4D latent space, cuts that
+    reconstruction error by more than an order of magnitude.
   </details>
   <div class="bar">
     <button id="compile">compile</button>
@@ -139,10 +146,10 @@
         <text class="note" x="212" y="181">N(0, 1)</text>
         <text class="note" x="212" y="282">sd 0.05</text>
       </g>
-      <text class="note" x="104" y="52">N(0, I₂)</text>
+      <text class="note" x="104" y="52">N(0, I₄)</text>
       <text class="note" x="104" y="154">20 units</text>
     </svg>
-    <pre class="eq">zᵢ  ~ N(0, I₂)
+    <pre class="eq">zᵢ  ~ N(0, I₄)
 hᵢ  = sigmoid(W₁ᵀzᵢ + b₁)
 μᵢ  = sigmoid(W₂ᵀhᵢ + b₂)
 xᵢⱼ ~ N(μᵢⱼ, 0.05²)</pre>
@@ -156,9 +163,11 @@ xᵢⱼ ~ N(μᵢⱼ, 0.05²)</pre>
     <h2>Latent space</h2>
     <p class="placeholder">Train the decoder to explore it.</p>
     <div class="live">
-      <p class="dim" style="margin:0 0 .4rem">Each digit's fitted <code>z</code>. Drag, or click a point.</p>
+      <p class="dim" style="margin:0 0 .4rem">Each digit's fitted <code>z</code>, on two of its four axes. Drag, or click a point.</p>
+      <div class="axes">x <select id="axX"></select> y <select id="axY"></select></div>
       <svg id="scatter" viewBox="0 0 230 230"></svg>
       <div class="legend" id="legend"></div>
+      <div id="sliders"></div>
     </div>
   </div>
 
@@ -169,7 +178,7 @@ xᵢⱼ ~ N(μᵢⱼ, 0.05²)</pre>
     <p class="dim" style="margin:0 0 .4rem">Rendered live from the fitted weights.</p>
     <canvas id="decodeCanvas"></canvas>
     <div class="readout">
-      <div>z[0] = <b id="z0Val">0.000</b> &nbsp; z[1] = <b id="z1Val">0.000</b></div>
+      <div id="zVals"></div>
       <div class="match" id="match"></div>
     </div>
     </div>
@@ -228,33 +237,22 @@ function drawSpark(values) {
 }
 
 function setupExplorer(result, labels) {
-  // A fresh node, so a retrain doesn't stack another set of drag listeners.
-  const scatter = $("scatter").cloneNode(false);
-  $("scatter").replaceWith(scatter);
+  const scatter = $("scatter");
   $("legend").innerHTML = "";
   $("explorer").classList.add("ready");
   $("explorer2").classList.add("ready");
 
+  const L = result.z[0].length;
   const SIZE = 230, MARGIN = 18;
-  const allZ = result.z.flat();
-  const domain = Math.max(1, ...allZ.map(Math.abs)) * 1.15;
-  const toPx = (z0, z1) => {
-    const s = (SIZE - 2 * MARGIN) / (2 * domain);
-    return [MARGIN + (z0 + domain) * s, (SIZE - MARGIN) - (z1 + domain) * s];
-  };
-  const toData = (px, py) => {
-    const s = (SIZE - 2 * MARGIN) / (2 * domain);
-    return [(px - MARGIN) / s - domain, (SIZE - MARGIN - py) / s - domain];
-  };
+  const domain = Math.max(1, ...result.z.flat().map(Math.abs)) * 1.15;
+  const scale = (SIZE - 2 * MARGIN) / (2 * domain);
+  const toPx = (a, b) => [MARGIN + (a + domain) * scale, (SIZE - MARGIN) - (b + domain) * scale];
+  const toData = (px, py) => [(px - MARGIN) / scale - domain, (SIZE - MARGIN - py) / scale - domain];
+  const clamp = (v) => Math.max(-domain, Math.min(domain, v));
 
-  for (let g = Math.ceil(-domain); g <= domain; g++) {
-    const [x0, y0] = toPx(g, -domain), [x1, y1] = toPx(g, domain);
-    scatter.appendChild(svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#eef1f3", "stroke-width": g === 0 ? 1.2 : 0.6 }));
-    const [xa, ya] = toPx(-domain, g), [xb, yb] = toPx(domain, g);
-    scatter.appendChild(svgEl("line", { x1: xa, y1: ya, x2: xb, y2: yb, stroke: "#eef1f3", "stroke-width": g === 0 ? 1.2 : 0.6 }));
-  }
-
-  const decodeCanvas = $("decodeCanvas");
+  // `cur` is the whole latent vector; the scatter moves two of its axes, sliders the rest.
+  const cur = new Array(L).fill(0);
+  let ax = 0, ay = 1, handle = null;
 
   function showMatch(idx) {
     const el = $("match");
@@ -268,51 +266,83 @@ function setupExplorer(result, labels) {
     el.append(c, label);
   }
 
-  function setLatent(z0, z1, snapIdx) {
-    $("z0Val").textContent = z0.toFixed(3);
-    $("z1Val").textContent = z1.toFixed(3);
-    paintGrid(decodeCanvas, result.decode(z0, z1), result.gridSize);
-    handle.setAttribute("cx", toPx(z0, z1)[0]);
-    handle.setAttribute("cy", toPx(z0, z1)[1]);
+  function render(snapIdx) {
+    $("zVals").innerHTML = cur.map((v, d) => `z[${d}] = <b>${v.toFixed(2)}</b>`).join(" &nbsp;");
+    paintGrid($("decodeCanvas"), result.decode(cur), result.gridSize);
+    const [hx, hy] = toPx(cur[ax], cur[ay]);
+    handle.setAttribute("cx", hx);
+    handle.setAttribute("cy", hy);
+    for (const input of $("sliders").querySelectorAll("input")) {
+      input.value = cur[input.dataset.dim];
+      input.nextElementSibling.textContent = cur[input.dataset.dim].toFixed(2);
+    }
     if (snapIdx != null) { showMatch(snapIdx); return; }
     let best = -1, bestD = Infinity;
     result.z.forEach((z, i) => {
-      const d = Math.hypot(z[0] - z0, z[1] - z1);
+      const d = Math.hypot(...z.map((v, k) => v - cur[k]));
       if (d < bestD) { bestD = d; best = i; }
     });
-    showMatch(bestD < domain * 0.12 ? best : null);
+    showMatch(bestD < domain * 0.15 ? best : null);
   }
 
-  const points = svgEl("g", {});
-  scatter.appendChild(points);
-  result.z.forEach((z, i) => {
-    const [px, py] = toPx(z[0], z[1]);
-    const g = svgEl("g", { style: "cursor:pointer" });
-    g.appendChild(svgEl("circle", { cx: px, cy: py, r: 6, fill: DIGIT_COLOR[labels[i]], "fill-opacity": 0.85, stroke: "#fff", "stroke-width": 1 }));
-    const t = svgEl("text", { x: px, y: py + 2.6, "text-anchor": "middle", "font-size": 7, fill: "#fff", style: "pointer-events:none" });
-    t.textContent = labels[i];
-    g.appendChild(t);
-    g.addEventListener("pointerdown", (e) => { e.stopPropagation(); setLatent(z[0], z[1], i); });
-    points.appendChild(g);
-  });
+  function drawScatter() {
+    scatter.innerHTML = "";
+    for (let g = Math.ceil(-domain); g <= domain; g++) {
+      const w = g === 0 ? 1.2 : 0.6;
+      const [x0, y0] = toPx(g, -domain), [x1, y1] = toPx(g, domain);
+      scatter.appendChild(svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#eef1f3", "stroke-width": w }));
+      const [xa, ya] = toPx(-domain, g), [xb, yb] = toPx(domain, g);
+      scatter.appendChild(svgEl("line", { x1: xa, y1: ya, x2: xb, y2: yb, stroke: "#eef1f3", "stroke-width": w }));
+    }
+    result.z.forEach((z, i) => {
+      const [px, py] = toPx(z[ax], z[ay]);
+      const g = svgEl("g", { style: "cursor:pointer" });
+      g.appendChild(svgEl("circle", { cx: px, cy: py, r: 6, fill: DIGIT_COLOR[labels[i]], "fill-opacity": 0.85, stroke: "#fff", "stroke-width": 1 }));
+      const t = svgEl("text", { x: px, y: py + 2.6, "text-anchor": "middle", "font-size": 7, fill: "#fff", style: "pointer-events:none" });
+      t.textContent = labels[i];
+      g.appendChild(t);
+      g.addEventListener("pointerdown", (e) => { e.stopPropagation(); cur.splice(0, L, ...z); render(i); });
+      scatter.appendChild(g);
+    });
+    handle = svgEl("circle", { r: 5.5, fill: "var(--handle)", stroke: "#fff", "stroke-width": 1.6 });
+    scatter.appendChild(handle);
+  }
 
-  const handle = svgEl("circle", { r: 5.5, fill: "var(--handle)", stroke: "#fff", "stroke-width": 1.6 });
-  scatter.appendChild(handle);
+  function buildSliders() {
+    $("sliders").innerHTML = "";
+    for (let d = 0; d < L; d++) {
+      if (d === ax || d === ay) continue;
+      const row = document.createElement("label");
+      row.className = "slider";
+      row.innerHTML = `<span>z[${d}]</span><input type="range" min="${-domain}" max="${domain}" step="any" data-dim="${d}"><b></b>`;
+      row.querySelector("input").oninput = (e) => { cur[d] = +e.target.value; render(); };
+      $("sliders").appendChild(row);
+    }
+  }
+
+  // Picking the axis the other select already shows swaps the two.
+  const opts = Array.from({ length: L }, (_, d) => `<option value="${d}">z[${d}]</option>`).join("");
+  $("axX").innerHTML = opts; $("axY").innerHTML = opts;
+  $("axX").value = ax; $("axY").value = ay;
+  const pick = (isX) => (e) => {
+    const v = +e.target.value;
+    if (isX) { if (v === ay) ay = ax; ax = v; } else { if (v === ax) ax = ay; ay = v; }
+    $("axX").value = ax; $("axY").value = ay;
+    drawScatter(); buildSliders(); render();
+  };
+  $("axX").onchange = pick(true);
+  $("axY").onchange = pick(false);
 
   let dragging = false;
-  function pointerToLatent(e) {
+  function drag(e) {
     const rect = scatter.getBoundingClientRect();
-    const px = (e.clientX - rect.left) * (SIZE / rect.width);
-    const py = (e.clientY - rect.top) * (SIZE / rect.height);
-    let [z0, z1] = toData(px, py);
-    z0 = Math.max(-domain, Math.min(domain, z0));
-    z1 = Math.max(-domain, Math.min(domain, z1));
-    return [z0, z1];
+    const [a, b] = toData((e.clientX - rect.left) * (SIZE / rect.width), (e.clientY - rect.top) * (SIZE / rect.height));
+    cur[ax] = clamp(a); cur[ay] = clamp(b);
+    render();
   }
-  scatter.addEventListener("pointerdown", (e) => { dragging = true; scatter.setPointerCapture(e.pointerId); setLatent(...pointerToLatent(e)); });
-  scatter.addEventListener("pointermove", (e) => { if (dragging) setLatent(...pointerToLatent(e)); });
-  scatter.addEventListener("pointerup", () => { dragging = false; });
-  scatter.addEventListener("pointercancel", () => { dragging = false; });
+  scatter.onpointerdown = (e) => { dragging = true; scatter.setPointerCapture(e.pointerId); drag(e); };
+  scatter.onpointermove = (e) => { if (dragging) drag(e); };
+  scatter.onpointerup = scatter.onpointercancel = () => { dragging = false; };
 
   for (let d = 0; d < 8; d++) {
     const sw = document.createElement("span");
@@ -321,7 +351,7 @@ function setupExplorer(result, labels) {
     $("legend").appendChild(sw);
   }
 
-  setLatent(0, 0);
+  drawScatter(); buildSliders(); render();
 }
 
 let ORIGINAL_PIXELS = null, LABELS = null, SHAPE = null, reconCanvases = [];
@@ -342,7 +372,7 @@ const ask = (msg, onSnapshot) => new Promise((resolve, reject) => {
 function paintRecon(mu) {
   const fit = decomposeMu(mu, SHAPE);
   for (let i = 0; i < reconCanvases.length; i++) {
-    paintGrid(reconCanvases[i], decodeWith(fit, fit.z[i][0], fit.z[i][1]), 14);
+    paintGrid(reconCanvases[i], decodeWith(fit, fit.z[i]), 14);
   }
 }
 
@@ -416,10 +446,10 @@ async function train() {
     // The snapshots are raw iterates; the final fit is Polyak-averaged over the
     // run's back half, so it settles a little past the last of them.
     const fit = decomposeMu(r.mu, SHAPE);
-    const decode = (z0, z1) => decodeWith(fit, z0, z1);
+    const decode = (z) => decodeWith(fit, z);
     let mse = 0;
     for (let i = 0; i < ORIGINAL_PIXELS.length; i++) {
-      const row = decode(fit.z[i][0], fit.z[i][1]);
+      const row = decode(fit.z[i]);
       paintGrid(reconCanvases[i], row, 14);
       for (let j = 0; j < row.length; j++) mse += (row[j] - ORIGINAL_PIXELS[i][j]) ** 2;
     }

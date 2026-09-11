@@ -8,9 +8,9 @@ const PORT = Number(process.env.PORT ?? 8140);
 const wanted = (process.env.BROWSERS ?? "chromium,firefox,webkit").split(",");
 const engines = { chromium, firefox, webkit };
 
-// Measured range across runs is ~0.005-0.010; the linear PPCA this replaced
+// Measured range across runs is ~0.0015-0.003; the linear PPCA this replaced
 // never got below ~0.047, so this is a generous ceiling, not a tight bound.
-const MAX_MSE = 0.015;
+const MAX_MSE = 0.006;
 
 let failed = false;
 for (const name of wanted) {
