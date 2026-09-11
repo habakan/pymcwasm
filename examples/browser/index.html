@@ -6,6 +6,8 @@
   body { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
          color: var(--ink); margin: 0; padding: 2.5rem 2rem; max-width: 92rem; }
   h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  a.home { display: inline-block; color: var(--dim); font-size: 12px; text-decoration: none; margin-bottom: .6rem; }
+  a.home:hover { color: var(--ink); }
   .sub { color: var(--dim); margin: 0 0 1.5rem; max-width: 46rem; }
   .bar { display: flex; gap: 1.1rem; align-items: flex-end; flex-wrap: wrap;
          padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 6px;
@@ -45,6 +47,7 @@
   .chains .name { width: 9rem; }
 </style>
 
+<a class="home" href="../../">&larr; pymcwasm</a>
 <h1>A PyMC model, compiled ahead of time, sampled in this browser</h1>
 <p class="sub">
   No server sampled this and no Python ran to sample it — the page holds a wasm
