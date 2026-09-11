@@ -88,7 +88,7 @@
 <footer id="foot"></footer>
 
 <script type="module">
-import { MODELS, sample } from "./app.js";
+import { MODELS, sample, tolerance } from "./app.js";
 import { histogram, trace } from "./plot.js";
 import { createAnalyzer, summaryTable, forestPlot, rankPlot, tracePlot } from "../../posteriorwasm/index.js";
 
@@ -154,7 +154,7 @@ async function run() {
       row.innerHTML =
         `<div><div class="name">${label}</div>` +
         `<div class="nums">mean <b>${r.mean[k].toFixed(3)}</b> · nutpie ` +
-        `${ref[label].mean.toFixed(3)} · <span class="gap ${gap > 0.3 ? "far" : "ok"}">` +
+        `${ref[label].mean.toFixed(3)} · <span class="gap ${gap > tolerance(name) ? "far" : "ok"}">` +
         `${gap.toFixed(2)} sd apart</span></div></div>`;
       const h = document.createElement("canvas");
       const t = document.createElement("canvas");

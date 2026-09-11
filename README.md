@@ -84,7 +84,7 @@ are everything a page needs; there is no other state.
 | --- | --- |
 | `model.wasm` | the module. Exports `log_prob_grad`, imports linear memory and its own arithmetic. |
 | `meta.json` | the numbers that go with it — see below. |
-| `reference.json` | nutpie's posterior for the same model, so the page can check itself, and the versions that produced it. Not needed to sample. |
+| `reference.json` | nutpie's posterior for the same model, so the page can check itself: a mean, an sd and that mean's `mcse` per parameter, and the versions that produced them. Not needed to sample. |
 
 `meta.json` holds four things the module cannot carry itself:
 
@@ -149,14 +149,16 @@ of cancelling. The worst of the seven is 1.8e-15 relative.
 
 **The posterior**, against `nutpie.compile_pymc_model` on the same model, in the
 unconstrained space so transformed parameters are checked rather than skipped.
-The furthest any parameter's mean sits from nutpie's is 0.46 sd, on
+The furthest any parameter's mean sits from nutpie's is 0.28 sd, on
 eight_schools written centred — the funnel, where two samplers taking different
-trajectories disagree by about that much. Everything else is under 0.15 sd.
+trajectories disagree by about that much, and where a page is allowed 0.5 sd
+rather than the 0.3 the other six are held to. Everything else is under 0.04 sd.
 
-That number moves with nutpie, not only with this code: nutpie 0.16.8 puts the
-same model's `tau_log__` a third of its own sd from where an earlier version
-put it, against the same seed. `reference.json` records the versions that
-produced it so a moved number can be told from a broken one.
+The reference is 20,000 draws over 4 chains, and records its own `mcse` beside
+each mean: at 1,000 draws it carried an error comparable to the gap it was
+checking, and eight_schools' stored `mu` sat a third of an sd from its own
+long-run value. It also records the versions that produced it, since the number
+moves with nutpie and not only with this code.
 
 Both are run by hand — `python src/pymcwasm/lowering.py` and `npm test` — when
 the emitter or the lowering moves, rather than on every commit. What they check

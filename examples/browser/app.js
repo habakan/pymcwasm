@@ -62,6 +62,11 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
   };
 }
 
+/** How far a parameter's mean may sit from the reference, in its sds.
+ * eight_schools is written centred: in the funnel the two samplers disagree by
+ * more than anywhere else, and the reference's own error is larger there too. */
+export const tolerance = (name) => (name === "eight_schools" ? 0.5 : 0.3);
+
 export async function compare(name, options) {
   const { meta, mean, ms, moduleBytes } = await sample(name, options);
   const reference = await (await fetch(`../../artifacts/${name}/reference.json`)).json();
@@ -75,5 +80,6 @@ export async function compare(name, options) {
   return {
     name, ms, moduleBytes, rows, meta,
     worst: Math.max(...rows.map((r) => r.gap)),
+    tolerance: tolerance(name),
   };
 }

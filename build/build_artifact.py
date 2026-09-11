@@ -75,16 +75,16 @@ def starting_point(model, seed=0, tries=50):
     raise RuntimeError("no starting point with a non-zero gradient in every component")
 
 
-def reference_posterior(model, names, draws=1000, chains=4, seed=7):
+def reference_posterior(model, names, draws=20000, chains=4, seed=7):
     """nutpie's posterior, pushed back into the space the sampler works in.
 
     The draws come out constrained and the module's do not, so comparing them
     directly would leave every transformed parameter unchecked.
 
-    Seeded, but not reproducible across versions: nutpie 0.16.8 puts
-    eight_schools' `tau_log__` a third of its own sd from where an earlier
-    version put it, which is the funnel rather than a bug. `versions` records
-    what produced this file so a moved number can be told from a broken one.
+    Long runs, and `mcse` beside each mean: at 1,000 draws eight_schools'
+    reference carried an error of its own comparable to the gap a page is
+    checked against, so a seed put the stored `mu` a third of an sd off its
+    own long-run value. `versions` records what produced the file.
     """
     import pytensor
 
@@ -108,15 +108,19 @@ def reference_posterior(model, names, draws=1000, chains=4, seed=7):
                 on_unused_input="ignore",
             )
             unconstrained = np.stack([np.asarray(fwd(d), dtype=float) for d in flat])
-        columns[value.name] = unconstrained.reshape(unconstrained.shape[0], -1)
+        columns[value.name] = unconstrained.reshape(a.shape[0], a.shape[1], -1)
 
     # Keyed by the same names the artifact carries, so the two line up by name.
+    import arviz as az
+
     out, at = {}, 0
     for value_name, col in columns.items():
-        for j in range(col.shape[1]):
+        for j in range(col.shape[2]):
+            draws_ij = col[:, :, j]
             out[names[at]] = {
-                "mean": float(col[:, j].mean()),
-                "sd": float(col[:, j].std()),
+                "mean": float(draws_ij.mean()),
+                "sd": float(draws_ij.std()),
+                "mcse": float(np.asarray(az.mcse(draws_ij)).ravel()[0]),
             }
             at += 1
     assert at == len(names), (at, len(names))
