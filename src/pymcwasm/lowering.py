@@ -49,7 +49,25 @@ def _apply(op, args, vals):
         "add_c": lambda: a(0) + c(1), "sub_c": lambda: a(0) - c(1),
         "rsub_c": lambda: c(1) - a(0), "mul_c": lambda: a(0) * c(1),
         "div_c": lambda: a(0) / c(1), "rdiv_c": lambda: c(1) / a(0),
+        # `dot_c <len> <node> <coeff> ...` and `sum_run <seed> <len> <node> ...`.
+        "dot_c": lambda: sum(a(1 + 2 * i) * c(2 + 2 * i) for i in range(int(args[0]))),
+        "sum_run": lambda: a(0) + sum(a(2 + i) for i in range(int(args[1]))),
     }[op]()
+
+
+def _run(nodes):
+    """The tape indices as a strictly increasing, evenly spaced run, or None.
+
+    Both run instructions want that shape; value numbering can merge two of the
+    elements into one node, which leaves a gap the tape text refuses.
+    """
+    xs = [int(n) for n in nodes]
+    if len(xs) < 2:
+        return None
+    stride = xs[1] - xs[0]
+    if stride <= 0:
+        return None
+    return stride if all(b - a == stride for a, b in zip(xs, xs[1:])) else None
 
 
 class TapeWriter:
@@ -273,15 +291,40 @@ class Lowerer:
             out[k] = taken if is_tape(src) else self.w.const_node(taken)
         return ("t", out)
 
-    def dot(self, a, b):
-        """Contraction as elementwise products and a sum over the shared axis.
+    def contract(self, coeffs, run):
+        """`dot_c` for one output element, or None if the run will not serve.
 
-        The tape has a contraction node, but it wants a contiguous run of tape
-        values and a stride, which the instruction stream cannot name — equal
-        expressions are numbered into one node, so positions do not survive.
-        Written this way the re-rolled loop finds the per-row block instead.
+        The contraction node names a run of tape values and a coefficient each,
+        so the products never reach the tape. What it needs is that the tape
+        side is evenly spaced — value numbering can merge two of its elements,
+        and then it is not.
+        """
+        if len(run) < 2 or _run(run) is None:
+            return None
+        pairs = []
+        for node, c in zip(run, coeffs):
+            pairs.extend((node, float(c)))
+        return self.w.emit("dot_c", len(run), *pairs)
+
+    def dot(self, a, b):
+        """A contraction node where one side is data, else products and a sum.
+
+        `X * beta` — data on the left, parameters on the right — is one node per
+        row rather than the `2K` a chain of multiplies and adds would record.
         """
         A, B = np.asarray(a[1]), np.asarray(b[1])
+        # Data on one side and an evenly spaced run of tape values on the other.
+        # PyTensor hands `X @ beta` over with beta as a column, so a trailing 1
+        # is the same shape as a vector and the result keeps it.
+        vec_b = B.ndim == 1 or (B.ndim == 2 and B.shape[1] == 1)
+        if A.ndim == 2 and vec_b and not is_tape(a) and is_tape(b):
+            run = list(B.ravel())
+            if len(run) == A.shape[1]:
+                rows = [self.contract(A[i], run) for i in range(A.shape[0])]
+                if all(r is not None for r in rows):
+                    out = np.empty(A.shape[0] if B.ndim == 1 else (A.shape[0], 1), dtype=object)
+                    out.ravel()[:] = rows
+                    return ("t", out)
         if A.ndim == 1 and B.ndim == 1:
             return self.reduce_sum(self.binary("Mul", a, b), None)
         if A.ndim == 2 and B.ndim == 1:
@@ -416,6 +459,12 @@ class Lowerer:
         out = np.empty(out_shape, dtype=object)
         for k in np.ndindex(out_shape):
             run = np.asarray(moved[k]).ravel()
+            # One reduction node where the run allows it: the chain it replaces
+            # carries a value from each element to the next, which is the one
+            # shape a re-rolled loop cannot run two repeats of at a time.
+            if len(run) >= 4 and _run(run[1:]) is not None:
+                out[k] = self.w.emit("sum_run", run[0], len(run) - 1, *run[1:])
+                continue
             acc = run[0]
             for nxt in run[1:]:
                 acc = self.w.emit("add", acc, nxt)
