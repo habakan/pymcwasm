@@ -234,16 +234,42 @@ async function diagnose() {
     diagSay("ArviZ…");
     const t0 = performance.now();
     const r = await py.runPythonAsync(`
-import arviz as az, arviz_plots as azp
+import arviz as az, arviz_plots as azp, numpy as np, pymc as pm
 idata = fit.to_inference_data(save_warmup=False)
+
+# PSIS-LOO needs a log-likelihood per observation, which the fit does not carry.
+# PyMC computes it from the model the draws came from.
+loo_html = ""
+try:
+    with ns["model"]:
+        pm.compute_log_likelihood(idata, progressbar=False)
+    r = az.loo(idata, pointwise=True)
+    k = np.asarray(r.pareto_k).ravel()
+    good = min(1 - 1 / np.log10(idata.posterior.sizes["chain"] * idata.posterior.sizes["draw"]), 0.7)
+    bad = int((k > good).sum())
+    flag = ' style="color:#d03b3b;font-weight:600"' if bad else ""
+    loo_html = (
+        '<table class="az-summary"><tbody>'
+        f"<tr><th>elpd_loo</th><td>{float(r.elpd):.2f} &plusmn; {float(r.se):.2f}</td></tr>"
+        f"<tr><th>p_loo</th><td>{float(r.p):.2f}</td></tr>"
+        f"<tr><th>n_obs</th><td>{k.size}</td></tr>"
+        f"<tr><th>max pareto_k</th><td{flag}>{k.max():.3f}</td></tr>"
+        f"<tr><th>pareto_k &gt; {good:.2f}</th><td{flag}>{bad}</td></tr>"
+        "</tbody></table>"
+    )
+except Exception as e:
+    # A model with no observed variable has nothing to leave out.
+    loo_html = f'<p class="note">no LOO: {type(e).__name__}: {e}</p>'
+
 {"summary": az.summary(idata).to_html(border=0, classes="az-summary"),
+ "loo": loo_html,
  "plots": [f(idata, backend="plotly").viz["figure"].item().to_json()
            for f in (azp.plot_forest, azp.plot_rank, azp.plot_trace_dist)]}
 `);
     const d = r.toJs({ dict_converter: Object.fromEntries });
     r.destroy();
     const out = $("diag-out");
-    out.innerHTML = d.summary;
+    out.innerHTML = d.summary + d.loo;
     for (const json of d.plots) {
       const fig = JSON.parse(json);
       const div = document.createElement("div");

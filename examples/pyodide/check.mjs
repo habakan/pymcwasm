@@ -24,11 +24,18 @@ if (!(await page.evaluate(() => window.failed))) {
   await page.click("#diag-go");
   await page.waitForFunction(() => window.diagDone || window.failed, null, { timeout: 300_000 });
 }
-const diag = await page.evaluate(() => ({
-  rows: document.querySelectorAll(".az-summary tbody tr").length,
-  plots: document.querySelectorAll("#diag-out .js-plotly-plot").length,
-  took: document.getElementById("diag-status").textContent,
-}));
+const diag = await page.evaluate(() => {
+  // The second `.az-summary` is the LOO table; its rows carry `elpd_loo` first.
+  const tables = [...document.querySelectorAll("#diag-out .az-summary")];
+  const loo = tables.length > 1 ? tables[1].textContent : "";
+  return {
+    rows: document.querySelectorAll(".az-summary tbody tr").length,
+    plots: document.querySelectorAll("#diag-out .js-plotly-plot").length,
+    took: document.getElementById("diag-status").textContent,
+    loo: loo.replace(/\s+/g, " ").trim().slice(0, 120),
+    looOk: /elpd_loo/.test(loo) && /pareto_k/.test(loo),
+  };
+});
 
 const failed = await page.evaluate(() => window.failed);
 const out = await page.textContent("#cost");
@@ -39,7 +46,8 @@ server.close();
 console.log(status);
 console.log(out);
 console.log(`ArviZ: ${diag.rows} summary rows, ${diag.plots} figures, ${diag.took}`);
-if (failed || errors.length || !diag.rows || diag.plots !== 3) {
+console.log(`LOO: ${diag.loo || "(なし)"}`);
+if (failed || errors.length || !diag.rows || diag.plots !== 3 || !diag.looOk) {
   console.error("FAILED", failed ?? "", errors.slice(0, 3).join(" | "));
   process.exit(1);
 }
