@@ -61,6 +61,15 @@ Costs a Pyodide runtime and a PyMC install on first load — tens of megabytes,
 tens of seconds. Compiling a small model then takes about a second, and drawing
 1000 times takes about ten milliseconds.
 
+The diagnostics on that page are ArviZ's own — `az.summary` and three
+`arviz_plots` figures — and now PSIS-LOO beside them. The fit does not carry a
+log-likelihood, so `pm.compute_log_likelihood` fills one in from the model the
+draws came from, and `az.loo` does the rest. The table reports `elpd_loo` with
+its standard error, `p_loo`, and the Pareto k diagnostic; observations past the
+threshold ArviZ warns at are flagged, since that is the one number saying the
+estimate itself is unreliable. A model with nothing observed says so and the
+other diagnostics carry on.
+
 ## Compile it beforehand and ship the module
 
 Nothing Python-shaped reaches the browser. A build step turns a model into a
