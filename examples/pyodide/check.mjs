@@ -32,7 +32,8 @@ const diag = await page.evaluate(() => {
     rows: document.querySelectorAll(".az-summary tbody tr").length,
     plots: document.querySelectorAll("#diag-out .js-plotly-plot").length,
     took: document.getElementById("diag-status").textContent,
-    loo: loo.replace(/\s+/g, " ").trim().slice(0, 120),
+    loo: (loo || [...document.querySelectorAll("#diag-out .note")]
+      .map((n) => n.textContent).join(" ")).replace(/\s+/g, " ").trim().slice(0, 200),
     looOk: /elpd_loo/.test(loo) && /pareto_k/.test(loo),
   };
 });

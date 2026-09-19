@@ -31,10 +31,10 @@ def compile_tape(tape_path, wasm_path):
          "--example", "tape_from_text", "--", tape_path, wasm_path],
         cwd=REPO, capture_output=True, text=True, check=True,
     )
-    meta, consts = {}, []
+    meta, consts = {"n_outputs": 0}, []
     for line in out.stdout.splitlines():
         f = line.split()
-        if f[0] in ("n_params", "scratch_len", "layout_id"):
+        if f[0] in ("n_params", "scratch_len", "layout_id", "n_outputs"):
             meta[f[0]] = int(f[1])
         elif f[0] == "const":
             consts.append(float(f[1]))
@@ -133,7 +133,7 @@ def build(name, out_dir):
 
     ip = starting_point(model)
     tape_path = os.path.join(out_dir, "model.tape")
-    lower(model, tape_path, ip, ip)
+    _, log_lik = lower(model, tape_path, ip, ip)
 
     wasm_path = os.path.join(out_dir, "model.wasm")
     meta, consts = compile_tape(tape_path, wasm_path)
@@ -159,6 +159,9 @@ def build(name, out_dir):
                 "paramNames": names,
                 "scratchInit": scratch_init,
                 "initialPoint": start,
+                # What the module's `evaluate` reports, in order: one entry per
+                # observed variable, so a page can shape the log-likelihood back.
+                "logLik": log_lik,
             },
             f,
         )
@@ -175,9 +178,12 @@ def build(name, out_dir):
         }
         json.dump(ref, f)
 
+    terms = sum(int(np.prod(g["shape"])) for g in log_lik)
+    assert terms == meta["n_outputs"], (terms, meta["n_outputs"])
     print(f"{name}: {meta['n_params']} params, "
           f"{os.path.getsize(wasm_path)} bytes of wasm, "
-          f"{meta['scratch_len']} scratch slots")
+          f"{meta['scratch_len']} scratch slots, "
+          f"{terms} log-likelihood terms")
 
 
 if __name__ == "__main__":

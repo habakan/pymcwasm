@@ -104,3 +104,70 @@ def test_chains_are_seeded_apart_and_stacked(monkeypatch):
     assert f.chain_draws[2].min() == 2.0
     assert f.stats["lp"].shape == (3, 6)
     assert f.ms == 6.0
+
+
+def test_the_log_likelihood_group_is_shaped_by_the_observed_variable():
+    with pm.Model(coords={"obs": [0, 1, 2]}) as m:
+        mu = pm.Normal("mu", 0, 1)
+        pm.Normal("y", mu, 1, observed=[0.1, -0.3, 1.2], dims="obs")
+    names = param_names(m)
+    rng = np.random.default_rng(1)
+    flat = rng.normal(size=(2, 8, len(names)))
+    rows = rng.normal(size=(2, 5, 3))
+    f = Fit(names, flat[:, 3:], flat[:, :3], None, 1.0, 100, 1.0, 1.0, m,
+            [{"name": "y", "shape": [3]}], rows)
+    ll = f.to_inference_data().log_likelihood
+    assert ll["y"].dims == ("chain", "draw", "obs")
+    assert list(ll["obs"].values) == [0, 1, 2]
+    np.testing.assert_allclose(ll["y"].values, rows)
+
+
+def test_without_reported_terms_there_is_no_log_likelihood_group():
+    f, _ = fit(model())
+    assert "log_likelihood" not in f.to_inference_data().groups()
+
+
+def test_sample_asks_the_module_for_each_draws_terms(monkeypatch):
+    m = model()
+    names = param_names(m)
+    seen = []
+
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+        total = warmup + draws
+        return {"draws": [float(chain)] * (total * len(param_names)), "stats": None,
+                "ms": 1.0, "nParams": len(param_names)}
+
+    async def fake_evaluate(handle, tw, draws):
+        seen.append(np.asarray(draws).shape)
+        return [[0.5, -0.5] for _ in range(len(draws))]
+
+    monkeypatch.setattr(pymcwasm._bridge, "draw", fake_draw)
+    monkeypatch.setattr(pymcwasm._bridge, "evaluate", fake_evaluate)
+    c = Compiled(SimpleNamespace(ms=1.0, bytes=100), None, names, np.zeros(len(names)),
+                 1.0, m, [{"name": "y", "shape": [2]}])
+    f = asyncio.run(c.sample(draws=4, warmup=2, chains=2))
+    # Post-warmup draws only, one row of terms each, per chain.
+    assert seen == [(4, len(names)), (4, len(names))]
+    assert f.log_lik_draws.shape == (2, 4, 2)
+    assert f.to_inference_data().log_likelihood["y"].shape == (2, 4, 2)
+
+
+def test_an_older_tapewasm_leaves_the_group_out(monkeypatch):
+    m = model()
+    names = param_names(m)
+
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+        total = warmup + draws
+        return {"draws": [0.0] * (total * len(param_names)), "stats": None, "ms": 1.0,
+                "nParams": len(param_names)}
+
+    async def no_evaluate(handle, tw, draws):
+        return None
+
+    monkeypatch.setattr(pymcwasm._bridge, "draw", fake_draw)
+    monkeypatch.setattr(pymcwasm._bridge, "evaluate", no_evaluate)
+    c = Compiled(SimpleNamespace(ms=1.0, bytes=100), None, names, np.zeros(len(names)),
+                 1.0, m, [{"name": "y", "shape": [2]}])
+    f = asyncio.run(c.sample(draws=3, warmup=1))
+    assert f.log_lik_draws is None
+    assert "log_likelihood" not in f.to_inference_data().groups()

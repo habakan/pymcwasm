@@ -32,14 +32,20 @@ for (const name of wanted) {
     return out;
   });
   // ArviZ over the four chains, through posteriorwasm; Pyodide comes from jsDelivr.
-  const diag = await page.evaluate(async () => {
+  // PSIS-LOO alongside, off the module's own pointwise log-likelihood — the
+  // group this page could not produce before the module reported it.
+  const { summary: diag, loo } = await page.evaluate(async () => {
     const { sample } = await import("/examples/browser/app.js");
     const { createAnalyzer } = await import("/posteriorwasm/index.js");
     const r = await sample("linear_regression");
     const analyzer = createAnalyzer();
     const res = await analyzer.analyze({ names: r.meta.paramNames, chains: r.chains, diverging: r.diverging });
+    const loo = r.logLikelihood
+      ? await analyzer.loo({ names: r.meta.paramNames, chains: r.chains,
+                             logLikelihood: r.logLikelihood })
+      : null;
     analyzer.terminate();
-    return res.summary;
+    return { summary: res.summary, loo };
   });
   await browser.close();
 
@@ -47,6 +53,18 @@ for (const name of wanted) {
   const leastEss = Math.min(...diag.map((s) => s.essBulk));
   console.log(`${name.padEnd(9)} ArviZ on linear_regression: r_hat ≤ ${worstRhat.toFixed(3)}, ess_bulk ≥ ${leastEss.toFixed(0)}`);
   if (!(worstRhat < 1.01)) failed = true;
+  if (!loo) {
+    // Until tapewasm 0.4.0 is on npm, the vendored package has no `evaluate`
+    // and the page cannot read the terms the artifacts already carry.
+    console.log(`${name.padEnd(9)} no PSIS-LOO: this tapewasm has no evaluate()`);
+  } else {
+    console.log(`${name.padEnd(9)} PSIS-LOO on ${loo.nObs} observations: `
+      + `elpd ${loo.elpd.toFixed(1)} ± ${loo.se.toFixed(1)}, p_loo ${loo.pLoo.toFixed(2)}, `
+      + `${loo.aboveGoodK} above k̂`);
+    // Three free parameters, so p_loo far from three means the terms are not the
+    // per-observation likelihood the estimate assumes.
+    if (!(loo.nObs === 20 && Math.abs(loo.pLoo - 3) < 2)) failed = true;
+  }
 
   if (errors.length) {
     console.log(`${name.padEnd(9)} page errors: ${errors.join("; ")}`);

@@ -237,12 +237,16 @@ async function diagnose() {
 import arviz as az, arviz_plots as azp, numpy as np, pymc as pm
 idata = fit.to_inference_data(save_warmup=False)
 
-# PSIS-LOO needs a log-likelihood per observation, which the fit does not carry.
+# PSIS-LOO needs a log-likelihood per observation. The module reports one per
+# draw now, so the fit arrives carrying it; an older tapewasm cannot, and then
 # PyMC computes it from the model the draws came from.
 loo_html = ""
 try:
-    with ns["model"]:
-        pm.compute_log_likelihood(idata, progressbar=False)
+    # groups is a method in ArviZ 0.x and a tuple in 1.x.
+    groups = idata.groups() if callable(idata.groups) else idata.groups
+    if "log_likelihood" not in groups:
+        with ns["model"]:
+            pm.compute_log_likelihood(idata, progressbar=False)
     r = az.loo(idata, pointwise=True)
     k = np.asarray(r.pareto_k).ravel()
     good = min(1 - 1 / np.log10(idata.posterior.sizes["chain"] * idata.posterior.sizes["draw"]), 0.7)

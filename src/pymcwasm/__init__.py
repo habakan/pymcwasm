@@ -75,17 +75,19 @@ def param_names(model):
     return names
 
 
-def tape_for(model, point=None):
-    """The model's log density as a tape, and the point it was traced at."""
+def tape_for(model, point=None, log_lik=True):
+    """The model's log density as a tape, the point it was traced at, and what
+    the tape's `outputs` line names: one entry per observed variable, with its
+    shape, in the order their log-likelihood terms are written."""
     import tempfile
     import os
 
     point = point or starting_point(model)
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "model.tape")
-        lowering.lower(model, path, point, point)
+        _, groups = lowering.lower(model, path, point, point, log_lik=log_lik)
         with open(path) as f:
-            return f.read(), point
+            return f.read(), point, groups
 
 
 class Fit:
@@ -96,7 +98,7 @@ class Fit:
     """
 
     def __init__(self, names, chain_draws, warmup_draws, stats, ms, module_bytes,
-                 compile_ms, lower_ms, model=None):
+                 compile_ms, lower_ms, model=None, log_lik=(), log_lik_draws=None):
         self.names = list(names)
         n = len(self.names)
         self.chain_draws = np.asarray(chain_draws, dtype=float).reshape(len(chain_draws), -1, n)
@@ -108,6 +110,11 @@ class Fit:
         self.compile_ms = compile_ms
         self.lower_ms = lower_ms
         self._model = model
+        # One entry per observed variable — name and shape — and the values the
+        # module reported, `(chain, draw, term)` over the post-warmup draws.
+        self.log_lik = list(log_lik)
+        self.log_lik_draws = (None if log_lik_draws is None
+                              else np.asarray(log_lik_draws, dtype=float))
 
     def to_inference_data(self, save_warmup=True):
         """The fit as an ArviZ `InferenceData`, in the model's own space.
@@ -115,6 +122,9 @@ class Fit:
         Needs ArviZ, and the model `compile` was given: each draw goes back
         through the model's transforms, so `sigma` rather than `sigma_log__`,
         with deterministics alongside and the model's dims and coords.
+
+        Carries a `log_likelihood` group when the module reported one, which is
+        what `az.loo` and `az.compare` read — no second pass through PyMC.
         """
         import arviz as az
         from pymc.util import get_default_varnames
@@ -138,6 +148,17 @@ class Fit:
             return {v.name: np.stack([c[i] for c in per_chain]) for i, v in enumerate(outs)}
 
         groups = {"posterior": constrained(self.chain_draws)}
+        if self.log_lik_draws is not None and self.log_lik:
+            chains, ndraws, _ = self.log_lik_draws.shape
+            at = 0
+            log_lik = {}
+            for group in self.log_lik:
+                size = int(np.prod(group["shape"])) if group["shape"] else 1
+                block = self.log_lik_draws[:, :, at:at + size]
+                log_lik[group["name"]] = block.reshape(
+                    (chains, ndraws, *group["shape"]))
+                at += size
+            groups["log_likelihood"] = log_lik
         warmup = self.warmup_draws.shape[1]
         if self.stats is not None:
             stats = {k: np.asarray(v) for k, v in self.stats.items() if k != "tuning"}
@@ -147,8 +168,9 @@ class Fit:
                 groups["warmup_sample_stats"] = {k: v[:, :warmup] for k, v in stats.items()}
         if save_warmup and warmup:
             groups["warmup_posterior"] = constrained(self.warmup_draws)
+        named = list(outs) + list(model.observed_RVs)
         dims = {v.name: list(model.named_vars_to_dims[v.name])
-                for v in outs if v.name in model.named_vars_to_dims}
+                for v in named if v.name in model.named_vars_to_dims}
         coords = {k: list(c) for k, c in model.coords.items() if c is not None}
         # ArviZ 1.0 takes the groups as one mapping; 0.x took one keyword per group.
         import inspect
@@ -180,7 +202,7 @@ class Compiled:
     not depend on the draws, so it is worth keeping.
     """
 
-    def __init__(self, handle, tw, names, init, lower_ms, model=None):
+    def __init__(self, handle, tw, names, init, lower_ms, model=None, log_lik=()):
         self._handle = handle
         self._tw = tw
         self.names = names
@@ -189,9 +211,15 @@ class Compiled:
         self.compile_ms = handle.ms
         self.module_bytes = handle.bytes
         self._model = model
+        self.log_lik = list(log_lik)
 
-    async def sample(self, draws=1000, warmup=1000, seed=42, chains=1):
-        """`chains` run one after another from the same start, chain c seeded `seed + c`."""
+    async def sample(self, draws=1000, warmup=1000, seed=42, chains=1, log_lik=True):
+        """`chains` run one after another from the same start, chain c seeded `seed + c`.
+
+        `log_lik` asks the module for each draw's pointwise log-likelihood, which
+        is one forward pass per draw and what `az.loo` reads. It needs a tapewasm
+        with `evaluate`; an older one leaves the group out.
+        """
         n = len(self.names)
         runs = [
             await _bridge.draw(self._handle, self._tw, self.init, warmup, draws, seed + c,
@@ -203,32 +231,45 @@ class Compiled:
         if all(r.get("stats") for r in runs):
             stats = {k: np.stack([np.asarray(r["stats"][k]) for r in runs])
                      for k in runs[0]["stats"]}
+        rows = None
+        if log_lik and self.log_lik:
+            per_chain = [await _bridge.evaluate(self._handle, self._tw, chain[warmup:])
+                         for chain in flat]
+            # A tapewasm without `evaluate` reports nothing rather than failing
+            # the run the draws already finished.
+            rows = None if any(r is None for r in per_chain) else np.stack(per_chain)
         return Fit(self.names, flat[:, warmup:], flat[:, :warmup], stats,
                    sum(r["ms"] for r in runs), self.module_bytes, self.compile_ms,
-                   self.lower_ms, self._model)
+                   self.lower_ms, self._model, self.log_lik, rows)
 
 
-async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH):
+async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True):
     """Lower `model` and emit its module.
 
     The data is part of the tape, so the result answers for one model and one
     dataset — but for as many draws as asked for.
+
+    `log_lik` also names each observation's log-likelihood term in the module,
+    so a fit can carry the group `az.loo` reads. It costs a second forward pass
+    — 1.35x the module's bytes, or up to 2.65x where the density contracts and
+    the terms are their own nodes.
     """
     import time
 
     t0 = time.perf_counter()
-    tape, point = tape_for(model, point)
+    tape, point, log_lik = tape_for(model, point, log_lik=log_lik)
     names = param_names(model)
     init = np.concatenate(
         [np.asarray(point[v.name], dtype=float).ravel() for v in model.value_vars]
     )
     lower_ms = (time.perf_counter() - t0) * 1000
     handle, tw = await _bridge.compile(tape, tapewasm_path)
-    return Compiled(handle, tw, names, init, lower_ms, model)
+    return Compiled(handle, tw, names, init, lower_ms, model, log_lik)
 
 
 async def sample(model, draws=1000, warmup=1000, seed=42, chains=1, point=None,
-                 tapewasm_path=DEFAULT_TAPEWASM_PATH):
+                 tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True):
     """Compile `model` and draw from it, in one go."""
-    compiled = await compile(model, point, tapewasm_path)
-    return await compiled.sample(draws=draws, warmup=warmup, seed=seed, chains=chains)
+    compiled = await compile(model, point, tapewasm_path, log_lik=log_lik)
+    return await compiled.sample(draws=draws, warmup=warmup, seed=seed, chains=chains,
+                                 log_lik=log_lik)

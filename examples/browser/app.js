@@ -44,7 +44,16 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
     const args = [new Float64Array(meta.initialPoint), warmup, draws, BigInt(seed + c)];
     const r = sampler.sampleWithStats(...args, c);
     // `draws` may be a view into wasm memory that the next chain overwrites.
-    runs.push({ draws: r.draws.slice(warmup * n), diverging: r.diverging.slice(warmup) });
+    const post = r.draws.slice(warmup * n);
+    runs.push({
+      draws: post,
+      diverging: r.diverging.slice(warmup),
+      // The pointwise log-likelihood, a row per draw, which is what PSIS-LOO
+      // reads. The module carries the terms only when it was compiled with
+      // them, and a tapewasm before 0.4.0 cannot read them back.
+      logLik: meta.logLik?.length && typeof sampler.evaluate === "function"
+        ? pointwise(sampler, post, n, draws) : null,
+    });
     sampler.free();
   }
   const ms = performance.now() - t0;
@@ -58,8 +67,20 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
   return {
     meta, mean, chains: runs.map((r) => r.draws),
     diverging: runs.map((r) => r.diverging),
+    logLikelihood: runs[0].logLik ? runs.map((r) => r.logLik) : null,
     nDraws: draws, nChains: chains, ms, moduleBytes: bytes.byteLength,
   };
+}
+
+/** One `evaluate` per draw, laid out `nDraws * nObs` row-major per chain. */
+function pointwise(sampler, post, n, draws) {
+  let out = null;
+  for (let i = 0; i < draws; i++) {
+    const row = sampler.evaluate(post.subarray(i * n, (i + 1) * n));
+    out ??= new Float64Array(draws * row.length);
+    out.set(row, i * row.length);
+  }
+  return out;
 }
 
 /** How far a parameter's mean may sit from the reference, in its sds.

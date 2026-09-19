@@ -472,8 +472,20 @@ class Lowerer:
         return ("t", out if out_shape else np.array(out.item(), dtype=object))
 
 
-def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
+def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
+    """Write the model's tape. Returns the parameter count and what `outputs` named.
+
+    With `log_lik`, each observed variable's own log-likelihood is lowered beside
+    the density, elementwise, and named on an `outputs` line — the terms
+    `az.loo` reads. The two graphs share their subexpressions and the tape
+    numbers equal expressions into one node, so on five of the seven models here
+    the terms add no node at all and the module grows 1.35–1.43x, for the second
+    forward pass alone. Where the density contracts (`matrix_regression`,
+    `lkj_mvnormal`) the per-observation terms are their own nodes and it is
+    2.35–2.65x, which is the reason this can be turned off.
+    """
     logp = model.logp(sum=True)
+    pointwise = model.logp(vars=model.observed_RVs, sum=False) if log_lik else []
     value_vars = model.value_vars
     ip = trace_at if trace_at is not None else model.initial_point()
 
@@ -493,7 +505,7 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
 
     # Fixed once: `memo` grows to hold every intermediate, and asking again
     # would treat those as graph inputs and walk nothing.
-    nodes = io_toposort(list(memo), [logp])
+    nodes = io_toposort(list(memo), [logp, *pointwise])
 
     tainted = set(memo)
     for node in nodes:
@@ -673,13 +685,27 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None):
     assert is_tape(root), "logp folded to a constant"
     root_id = int(np.asarray(root[1]).item())
 
+    # One entry per observed variable, in the order their terms are written.
+    outputs, groups = [], []
+    for rv, term in zip(model.observed_RVs, pointwise):
+        kind, vals = get(term)
+        vals = np.atleast_1d(np.asarray(vals))
+        for k in np.ndindex(vals.shape):
+            # A term that does not reach a parameter is a constant, and the
+            # module still has to report it in place.
+            outputs.append(int(vals[k]) if kind == "t" else w.const_node(float(vals[k])))
+        groups.append({"name": rv.name, "shape": list(vals.shape)})
+
     at = test_at if test_at is not None else point
     flat = np.concatenate([np.asarray(at[v.name], dtype=float).ravel() for v in value_vars])
     header = [f"n_params {n_params}", "test_params " + " ".join(repr(float(x)) for x in flat)]
+    tail = [f"root {root_id}"]
+    if outputs:
+        tail.append("outputs " + " ".join(str(i) for i in outputs))
     with open(out_path, "w") as f:
-        f.write("\n".join(header + w.lines + [f"root {root_id}"]) + "\n")
+        f.write("\n".join(header + w.lines + tail) + "\n")
 
-    return n_params
+    return n_params, groups
 
 
 def _dimshuffle(op, arr):
@@ -807,7 +833,7 @@ def check(name, build):
     test_at = jitter(ip, rng, 0.7)
     path = os.path.join(REPO, "target", f"{name}.tape")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    n_params = lower(model, path, trace_at, test_at)
+    n_params, log_lik = lower(model, path, trace_at, test_at)
 
     out = subprocess.run(
         ["cargo", "run", "-q", "--release", "-p", "tapewasm-codegen",
@@ -818,25 +844,38 @@ def check(name, build):
         print(f"{name}: FAILED\n{out.stderr[-800:]}")
         return
     got_lp = None
-    got_g = []
+    got_g, got_ll = [], []
     for line in out.stdout.splitlines():
         if line.startswith("lp "):
             got_lp = float(line.split()[1])
         elif line.startswith("grad "):
             got_g.append(float(line.split()[1]))
+        elif line.startswith("ll "):
+            got_ll.append(float(line.split()[1]))
     want_lp = float(model.compile_logp()(test_at))
     want_g = np.asarray(model.compile_dlogp()(test_at), dtype=float)
     got_g = np.asarray(got_g)
+    # The module's own log-likelihood terms, against PyMC's for the same point.
+    terms = model.logp(vars=model.observed_RVs, sum=False)
+    want_ll = np.concatenate([
+        np.atleast_1d(np.asarray(v, dtype=float)).ravel()
+        for v in model.compile_fn(terms, inputs=model.value_vars,
+                                  on_unused_input="ignore", point_fn=True)(test_at)
+    ]) if terms else np.zeros(0)
 
     def rel(a, b):
         return abs(a - b) / max(abs(a), abs(b), 1.0)
 
     lp_err = rel(got_lp, want_lp)
     g_err = max(rel(a, b) for a, b in zip(got_g, want_g)) if len(got_g) else float("nan")
+    if len(got_ll) != len(want_ll):
+        print(f"{name}: {len(got_ll)} log_lik terms, PyMC has {len(want_ll)}")
+        return
+    ll_err = max((rel(a, b) for a, b in zip(got_ll, want_ll)), default=0.0)
     nodes = [l for l in out.stderr.splitlines() if "replayed" in l]
     flag = "  KNOWN WRONG" if name in KNOWN_WRONG else ""
     print(f"{name:<20} params {n_params:>3}  lp rel {lp_err:.2e}  grad rel {g_err:.2e}"
-          f"   {nodes[0] if nodes else ''}{flag}")
+          f"  log_lik {len(got_ll):>4} rel {ll_err:.2e}   {nodes[0] if nodes else ''}{flag}")
 
 
 if __name__ == "__main__":

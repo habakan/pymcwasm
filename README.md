@@ -62,9 +62,11 @@ tens of seconds. Compiling a small model then takes about a second, and drawing
 1000 times takes about ten milliseconds.
 
 The diagnostics on that page are ArviZ's own — `az.summary` and three
-`arviz_plots` figures — and now PSIS-LOO beside them. The fit does not carry a
-log-likelihood, so `pm.compute_log_likelihood` fills one in from the model the
-draws came from, and `az.loo` does the rest. The table reports `elpd_loo` with
+`arviz_plots` figures — and PSIS-LOO beside them. The fit carries its own
+log-likelihood: each observation's term is named in the module, and one forward
+pass per draw reports it, so `az.loo` has what it needs without PyMC
+recomputing anything (an older tapewasm cannot report them, and
+`pm.compute_log_likelihood` fills in as before). The table reports `elpd_loo` with
 its standard error, `p_loo`, and the Pareto k diagnostic; observations past the
 threshold ArviZ warns at are flagged, since that is the one number saying the
 estimate itself is unreliable. A model with nothing observed says so and the
@@ -77,7 +79,9 @@ Nothing Python-shaped reaches the browser. A build step turns a model into a
 
 The page samples four chains, and its ArviZ button diagnoses them with
 [posteriorwasm](https://github.com/habakan/posteriorwasm): arviz-stats on
-Pyodide in a worker, about 24 MB fetched only when pressed.
+Pyodide in a worker, about 24 MB fetched only when pressed. PSIS-LOO comes with
+them, off the module's own pointwise log-likelihood — the one group a page with
+no Python could not produce before.
 
 ```
 npm start        # then open /
@@ -211,8 +215,13 @@ examples/pyodide/  the in-page path
   mean, and so does a logit regression on balanced data. `pymcwasm.sample` looks
   for one; a caller supplying its own has to as well.
 - **Continuous parameters only**, and no prior or posterior predictive.
-  `Fit.to_inference_data()` gives ArviZ the posterior and, with a tapewasm
-  that returns them, the sampler statistics — no `log_likelihood` group yet.
+  `Fit.to_inference_data()` gives ArviZ the posterior, the sampler statistics
+  when tapewasm returns them, and a `log_likelihood` group when the module was
+  compiled with the terms — `compile(model, log_lik=False)` leaves them out.
+  Naming them costs a second forward pass in the module: 1.35–1.43x its bytes
+  on five of the seven models here, and 2.35–2.65x on `matrix_regression` and
+  `lkj_mvnormal`, where the density contracts and the per-observation terms are
+  their own nodes rather than the density's.
 
 ## Status
 
