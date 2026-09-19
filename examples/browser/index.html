@@ -90,7 +90,7 @@
 <script type="module">
 import { MODELS, sample, tolerance } from "./app.js";
 import { histogram, trace } from "./plot.js";
-import { createAnalyzer, summaryTable, forestPlot, rankPlot, tracePlot } from "../../posteriorwasm/index.js";
+import { createAnalyzer, summaryTable, forestPlot, rankPlot, tracePlot, looTable } from "../../posteriorwasm/index.js";
 
 const $ = (id) => document.getElementById(id);
 for (const m of MODELS) $("model").add(new Option(m, m));
@@ -110,8 +110,18 @@ async function diagnose() {
     const res = await analyzer.analyze({ names: r.meta.paramNames, chains: r.chains, diverging: r.diverging });
     if (r !== last) return;
     const div = res.diverging ? ` · ${res.diverging.reduce((a, b) => a + b, 0)} divergences` : "";
+    // PSIS-LOO from the module's own pointwise log-likelihood — no PyMC on this
+    // page, and nothing recomputed in Python.
+    let loo = "";
+    if (r.logLikelihood) {
+      const l = await analyzer.loo({
+        names: r.meta.paramNames, chains: r.chains, logLikelihood: r.logLikelihood,
+      });
+      if (r !== last) return;
+      loo = looTable(l);
+    }
     $("diag-status").textContent = `${res.nChains} chains × ${res.nDraws} draws, ${(performance.now() - t0).toFixed(0)} ms${div}`;
-    $("diag-out").innerHTML = summaryTable(res) + forestPlot(res, { width: 480, labelWidth: 150 }) +
+    $("diag-out").innerHTML = summaryTable(res) + loo + forestPlot(res, { width: 480, labelWidth: 150 }) +
       res.names.map((name, k) =>
         `<div class="chains"><div class="name">${name}</div>${rankPlot(res, k)}${tracePlot(res, k)}</div>`).join("");
   } catch (e) {

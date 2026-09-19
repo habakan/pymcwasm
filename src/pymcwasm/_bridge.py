@@ -14,6 +14,8 @@ JupyterLite, marimo and Quarto layouts. Here the path is given, or defaults to
 the shape those layouts serve a package from.
 """
 
+import numpy as np
+
 DEFAULT_TAPEWASM_PATH = "/files/tapewasm/pkg/tapewasm.js"
 
 _loaded = {}
@@ -94,6 +96,38 @@ async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH):
         """
     )
     return await build(tw, tape, _MATH_JS), tw
+
+
+async def evaluate(handle, tw, draws):
+    """Each draw's pointwise log-likelihood, `(draw, term)`.
+
+    One `evaluate` call per draw — the module's forward pass, no gradient — done
+    in one trip across the boundary rather than one per draw. A tapewasm without
+    `evaluate` leaves the rows out rather than failing the run.
+    """
+    from pyodide.code import run_js
+
+    rows = run_js(
+        """
+        ((tw, h, flat, nParams) => {
+            tw.setAotExports(h.exports);
+            const s = new tw.AotSampler(
+                h.built.nParams, h.built.scratchInit, h.built.layoutId, [],
+            );
+            if (typeof s.evaluate !== "function") return null;
+            const draws = new Float64Array(flat);
+            const out = [];
+            for (let i = 0; i < draws.length / nParams; i++) {
+                out.push(Array.from(s.evaluate(draws.subarray(i * nParams, (i + 1) * nParams))));
+            }
+            return out;
+        })
+        """
+    )
+    n_params = int(np.asarray(draws).shape[-1])
+    flat = np.asarray(draws, dtype=float).ravel()
+    got = rows(tw, handle, list(flat), n_params)
+    return None if got is None else got.to_py()
 
 
 async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):

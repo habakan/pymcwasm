@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "posteriorwasm": "github:habakan/posteriorwasm#6951eb5a793f10438732351680089a98ac42d88a",
-    "tapewasm": "^0.3.0"
+    "tapewasm": "^0.3.3"
   },
   "devDependencies": {
     "playwright": "^1.56.0"
