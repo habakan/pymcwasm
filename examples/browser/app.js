@@ -49,10 +49,8 @@ export async function sample(name, { warmup = 1000, draws = 1000, seed = 42, cha
       draws: post,
       diverging: r.diverging.slice(warmup),
       // The pointwise log-likelihood, a row per draw, which is what PSIS-LOO
-      // reads. The module carries the terms only when it was compiled with
-      // them, and a tapewasm before 0.4.0 cannot read them back.
-      logLik: meta.logLik?.length && typeof sampler.evaluate === "function"
-        ? pointwise(sampler, post, n, draws) : null,
+      // reads. The module carries the terms only when it was compiled with them.
+      logLik: meta.logLik?.length ? pointwise(sampler, post, n, draws) : null,
     });
     sampler.free();
   }

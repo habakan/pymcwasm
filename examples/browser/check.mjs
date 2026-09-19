@@ -54,9 +54,8 @@ for (const name of wanted) {
   console.log(`${name.padEnd(9)} ArviZ on linear_regression: r_hat ≤ ${worstRhat.toFixed(3)}, ess_bulk ≥ ${leastEss.toFixed(0)}`);
   if (!(worstRhat < 1.01)) failed = true;
   if (!loo) {
-    // Until tapewasm 0.4.0 is on npm, the vendored package has no `evaluate`
-    // and the page cannot read the terms the artifacts already carry.
-    console.log(`${name.padEnd(9)} no PSIS-LOO: this tapewasm has no evaluate()`);
+    console.log(`${name.padEnd(9)} no PSIS-LOO: the page read no terms off the module`);
+    failed = true;
   } else {
     console.log(`${name.padEnd(9)} PSIS-LOO on ${loo.nObs} observations: `
       + `elpd ${loo.elpd.toFixed(1)} ± ${loo.se.toFixed(1)}, p_loo ${loo.pLoo.toFixed(2)}, `
