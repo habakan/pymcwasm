@@ -7,13 +7,12 @@ Writes into <out>/:
     meta.json       what `new AotSampler(...)` takes, plus the point to start from
     reference.json  nutpie's posterior mean and sd per parameter, for comparison
 
-    TAPEWASM=/path/to/tapewasm uv run --with pymc --with scipy --with nutpie \\
+    npm install && uv run --with pymc --with scipy --with nutpie \\
         python build/build_artifact.py <model> artifacts/<model>
 """
 
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -21,58 +20,8 @@ import nutpie
 import pymc as pm
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from pymcwasm.lowering import MODELS, REPO, lower
-
-
-def compile_tape(tape_path, wasm_path):
-    """Run the emitter over a tape file, and read back what a host needs."""
-    out = subprocess.run(
-        ["cargo", "run", "-q", "--release", "-p", "tapewasm-codegen",
-         "--example", "tape_from_text", "--", tape_path, wasm_path],
-        cwd=REPO, capture_output=True, text=True, check=True,
-    )
-    meta, consts = {"n_outputs": 0}, []
-    for line in out.stdout.splitlines():
-        f = line.split()
-        if f[0] in ("n_params", "scratch_len", "layout_id", "n_outputs"):
-            meta[f[0]] = int(f[1])
-        elif f[0] == "const":
-            consts.append(float(f[1]))
-    return meta, consts
-
-
-def param_names(model):
-    """One name per unconstrained scalar, in the order the sampler reads them."""
-    ip = model.initial_point()
-    names = []
-    for v in model.value_vars:
-        shape = np.shape(np.asarray(ip[v.name]))
-        if not shape:
-            names.append(v.name)
-        else:
-            for idx in np.ndindex(shape):
-                names.append(f"{v.name}[{','.join(str(i) for i in idx)}]")
-    return names
-
-
-def starting_point(model, seed=0, tries=50):
-    """A point nuts-rs will accept.
-
-    It refuses a start whose gradient has a zero component, because the mass
-    matrix it adapts is scaled by that gradient. PyMC's `initial_point()` is
-    zeros, and at the origin a centred hierarchical model has an exactly zero
-    gradient in its population mean, as does a logit regression with balanced
-    data — so the default point is refused for shapes people actually write.
-    """
-    dlogp = model.compile_dlogp()
-    ip = model.initial_point()
-    rng = np.random.default_rng(seed)
-    for _ in range(tries):
-        if np.all(np.abs(np.asarray(dlogp(ip), dtype=float)) > 1e-12):
-            return ip
-        ip = {k: np.asarray(v, dtype=float) + rng.uniform(-2, 2, np.shape(v))
-              for k, v in model.initial_point().items()}
-    raise RuntimeError("no starting point with a non-zero gradient in every component")
+from pymcwasm.build import build as build_module
+from pymcwasm.lowering import MODELS
 
 
 def reference_posterior(model, names, draws=20000, chains=4, seed=7):
@@ -129,48 +78,16 @@ def reference_posterior(model, names, draws=20000, chains=4, seed=7):
 
 def build(name, out_dir):
     model = MODELS[name]()
-    os.makedirs(out_dir, exist_ok=True)
-
-    ip = starting_point(model)
-    tape_path = os.path.join(out_dir, "model.tape")
-    _, log_lik = lower(model, tape_path, ip, ip)
-
-    wasm_path = os.path.join(out_dir, "model.wasm")
-    meta, consts = compile_tape(tape_path, wasm_path)
-
-    # The buffer the module works in: zeroed primals and adjoints, then the
-    # re-rolled loops' constants at the tail.
-    scratch_init = [0.0] * meta["scratch_len"]
-    if consts:
-        scratch_init[meta["scratch_len"] - len(consts):] = consts
-
-    names = param_names(model)
-    assert len(names) == meta["n_params"], (len(names), meta["n_params"])
-    start = np.concatenate(
-        [np.asarray(ip[v.name], dtype=float).ravel() for v in model.value_vars]
-    ).tolist()
-
+    meta = build_module(model, out_dir)
+    meta["model"] = name
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
-        json.dump(
-            {
-                "model": name,
-                "nParams": meta["n_params"],
-                "layoutId": meta["layout_id"],
-                "paramNames": names,
-                "scratchInit": scratch_init,
-                "initialPoint": start,
-                # What the module's `evaluate` reports, in order: one entry per
-                # observed variable, so a page can shape the log-likelihood back.
-                "logLik": log_lik,
-            },
-            f,
-        )
+        json.dump(meta, f)
 
     with open(os.path.join(out_dir, "reference.json"), "w") as f:
         import nutpie as _nutpie
         import pytensor as _pytensor
 
-        ref = reference_posterior(model, names)
+        ref = reference_posterior(model, meta["paramNames"])
         ref["versions"] = {
             "nutpie": _nutpie.__version__,
             "pymc": pm.__version__,
@@ -178,12 +95,9 @@ def build(name, out_dir):
         }
         json.dump(ref, f)
 
-    terms = sum(int(np.prod(g["shape"])) for g in log_lik)
-    assert terms == meta["n_outputs"], (terms, meta["n_outputs"])
-    print(f"{name}: {meta['n_params']} params, "
-          f"{os.path.getsize(wasm_path)} bytes of wasm, "
-          f"{meta['scratch_len']} scratch slots, "
-          f"{terms} log-likelihood terms")
+    size = os.path.getsize(os.path.join(out_dir, "model.wasm"))
+    print(f"{name}: {meta['nParams']} params, {size} bytes of wasm, "
+          f"{len(meta['scratchInit'])} scratch slots")
 
 
 if __name__ == "__main__":

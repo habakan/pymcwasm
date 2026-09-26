@@ -11,6 +11,9 @@ dependencies = ["numpy"]
 Homepage = "https://github.com/habakan/pymcwasm"
 stanwasm = "https://github.com/habakan/stanwasm"
 
+[project.scripts]
+pymcwasm-build = "pymcwasm.build:main"
+
 [project.optional-dependencies]
 # Only the offline artifact builder and the checks need these; the package
 # itself runs inside Pyodide, where PyMC is installed by the page.

@@ -152,13 +152,9 @@ COMPARISON = {
 
 UNARY_TEST = {"Invert", "IsNan", "IsInf"}
 
-# A continuous value equals a given number, or is nan or inf, with probability
-# zero, so these fold to false where a bounds check folds to true.
-ASSUMED_FALSE = {"EQ", "IsNan", "IsInf"}
-
-# Comparisons folded because a tape value reached them. Vacuous for a bounds
+# Comparisons a tape value reached, folded at the trace point. Vacuous for a bounds
 # check after the transforms, or for a test of a measure-zero event.
-ASSUMED_TRUE = []
+FOLDED = []
 
 PASSTHROUGH = {
     "CheckParameterValue", "ScalarFromTensor", "TensorFromScalar", "Identity",
@@ -224,9 +220,7 @@ class Lowerer:
         if name == "Log1p":
             return self.unary("Log", self.binary("Add", ins[0], ("c", np.array(1.0))))
         if name == "Sigmoid":
-            neg = self.unary("Neg", ins[0])
-            den = self.binary("Add", self.unary("Exp", neg), ("c", np.array(1.0)))
-            return self.binary("TrueDiv", ("c", np.array(1.0)), den)
+            return self.unary("Exp", self.unary("Neg", self.scalar_op("Softplus", [self.unary("Neg", ins[0])])))
         if name == "Pow":
             if not is_tape(ins[1]):
                 base = ins[0]
@@ -240,22 +234,19 @@ class Lowerer:
         if name == "Switch":
             return self.select(ins[0], ins[1], ins[2])
         if name in COMPARISON:
-            # On constants this is a real test the data decides. On a tape value
-            # it is a bounds check, true by construction after the transforms.
-            if all(not is_tape(x) for x in ins):
-                vals = [np.asarray(x[1]) for x in ins]
-                if len(vals) == 1:
-                    r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
-                else:
-                    r = vals[0]
-                    for v in vals[1:]:
-                        r = COMPARISON[name](r, v)
-                return ("c", np.asarray(r).astype(float))
-            ASSUMED_TRUE.append(name)
-            # Folded at the shape the comparison had: a scalar here makes the
-            # reduction over it collapse the wrong axis.
-            shape = np.broadcast_shapes(*[np.shape(x[1]) for x in ins])
-            return ("c", np.zeros(shape) if name in ASSUMED_FALSE else np.ones(shape))
+            # On a tape value it is a bounds check, constant after the transforms, so
+            # it folds to what it is at the trace point: `value < 0` guards HalfFlat.
+            if any(is_tape(x) for x in ins):
+                FOLDED.append(name)
+            vals = [np.vectorize(lambda i: self.w.values[int(i)], otypes=[float])(x[1])
+                    if is_tape(x) else np.asarray(x[1]) for x in ins]
+            if len(vals) == 1:
+                r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
+            else:
+                r = vals[0]
+                for v in vals[1:]:
+                    r = COMPARISON[name](r, v)
+            return ("c", np.asarray(r).astype(float))
         if name == "Second":
             return ins[1]
         if name in ("Identity", "Cast", "ScalarIdentity"):
@@ -265,8 +256,11 @@ class Lowerer:
                 return ("c", np.sign(ins[0][1]))
             return self.binary("TrueDiv", ins[0], self.unary("Abs", ins[0]))
         if name == "Softplus":
-            return self.unary("Log", self.binary(
-                "Add", self.unary("Exp", ins[0]), ("c", np.array(1.0))))
+            # max(x, 0) + log(1 + exp(-|x|)): the plain form is inf past x = 709.
+            x, ax = ins[0], self.unary("Abs", ins[0])
+            relu = self.binary("Mul", self.binary("Add", x, ax), ("c", np.array(0.5)))
+            tail = self.unary("Exp", self.unary("Neg", ax))
+            return self.binary("Add", relu, self.unary("Log", self.binary("Add", tail, ("c", np.array(1.0)))))
         if name == "Log1mexp":
             inner = self.unary("Exp", ins[0])
             return self.unary("Log", self.binary("Sub", ("c", np.array(1.0)), inner))
@@ -472,6 +466,49 @@ class Lowerer:
         return ("t", out if out_shape else np.array(out.item(), dtype=object))
 
 
+def _eval_float(var):
+    """A constant subgraph's value, computed in float64 where it is integer arithmetic.
+
+    `StudentT(nu=3, sigma=10)` scales by an int8 `nu * sigma**2`, which wraps to 44 on
+    its own; PyMC's compiled logp upcasts first and gets 300. An index cannot be a
+    float, so that one keeps its integer evaluation.
+    """
+    import pytensor.tensor as pt
+
+    def rebuild(v, memo):
+        if v not in memo:
+            if v.owner is None:
+                memo[v] = pt.cast(v, "float64") if v.dtype.startswith(("int", "uint")) else v
+            else:
+                ins = [rebuild(i, memo) for i in v.owner.inputs]
+                memo[v] = v.owner.op.make_node(*ins).outputs[v.owner.outputs.index(v)]
+        return memo[v]
+
+    if var.owner is not None and var.dtype.startswith(("int", "uint")):
+        try:
+            return np.asarray(rebuild(var, {}).eval(), dtype=float)
+        except Exception:
+            pass
+    return np.asarray(var.eval(), dtype=float)
+
+
+def _stabilize(outputs):
+    """PyTensor's own rewrites of log(sigmoid(x)) and log1p(-sigmoid(x)) into softplus.
+
+    A Bernoulli's logit likelihood is written that way, and a logit past about 37
+    rounds sigmoid to 1, so log1p(-1) is -inf and the gradient NaN.
+    """
+    from pytensor.graph.fg import FunctionGraph
+    from pytensor.graph.rewriting.basic import in2out
+    from pytensor.tensor.rewriting.math import (
+        log1msigm_to_softplus, log1p_neg_sigmoid, logsigm_to_softplus)
+
+    fg = FunctionGraph(outputs=outputs, clone=False)
+    for rewrite in (logsigm_to_softplus, log1msigm_to_softplus, log1p_neg_sigmoid):
+        in2out(rewrite).rewrite(fg)
+    return fg.outputs
+
+
 def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
     """Write the model's tape. Returns the parameter count and what `outputs` named.
 
@@ -486,6 +523,7 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
     """
     logp = model.logp(sum=True)
     pointwise = model.logp(vars=model.observed_RVs, sum=False) if log_lik else []
+    logp, *pointwise = _stabilize([logp, *pointwise])
     value_vars = model.value_vars
     ip = trace_at if trace_at is not None else model.initial_point()
 
@@ -515,7 +553,7 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
     def get(var):
         if var in memo:
             return memo[var]
-        return ("c", np.asarray(var.eval(), dtype=float))
+        return ("c", _eval_float(var))
 
     def resolve_scalar(var):
         got = get(var)
