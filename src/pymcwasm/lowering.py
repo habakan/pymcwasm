@@ -166,8 +166,9 @@ PASSTHROUGH = {
 
 
 class Lowerer:
-    def __init__(self, w):
+    def __init__(self, w, fold_comparisons=True):
         self.w = w
+        self.fold_comparisons = fold_comparisons
 
     def binary(self, name, a, b):
         node_op, c_right, c_left, npf = BINARY[name]
@@ -239,6 +240,8 @@ class Lowerer:
             # On a tape value it is a bounds check, constant after the transforms, so
             # it folds to what it is at the trace point: `value < 0` guards HalfFlat.
             if any(is_tape(x) for x in ins):
+                if not self.fold_comparisons:
+                    raise NotImplementedError(f"{name} on an input: the tape has no select to branch with")
                 FOLDED.append(name)
             vals = [np.vectorize(lambda i: self.w.values[int(i)], otypes=[float])(x[1])
                     if is_tape(x) else np.asarray(x[1]) for x in ins]
@@ -694,41 +697,28 @@ def _stabilize(outputs):
     return fg.outputs
 
 
-def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
-    """Write the model's tape. Returns the parameter count and what `outputs` named.
+def lower_graph(inputs, outputs, at, fold_comparisons=True, on_node=None):
+    """Lower `outputs` over `inputs`, each a tape leaf traced at its value in `at`.
 
-    With `log_lik`, each observed variable's own log-likelihood is lowered beside
-    the density, elementwise, and named on an `outputs` line — the terms
-    `az.loo` reads. The two graphs share their subexpressions and the tape
-    numbers equal expressions into one node, so on five of the seven models here
-    the terms add no node at all and the module grows 1.35–1.43x, for the second
-    forward pass alone. Where the density contracts (`matrix_regression`,
-    `lkj_mvnormal`) the per-observation terms are their own nodes and it is
-    2.35–2.65x, which is the reason this can be turned off.
+    Returns the writer and each output lowered. `fold_comparisons` is the logp
+    assumption that a comparison reaching an input is a bounds check; without it
+    one is refused, since the tape has no branch to take instead.
     """
-    logp = model.logp(sum=True)
-    pointwise = model.logp(vars=model.observed_RVs, sum=False) if log_lik else []
-    logp, *pointwise = _stabilize([logp, *pointwise])
-    value_vars = model.value_vars
-    ip = trace_at if trace_at is not None else model.initial_point()
-
     w = TapeWriter()
-    low = Lowerer(w)
+    low = Lowerer(w, fold_comparisons)
 
     # Leaves first, in the order the raveled parameter vector uses.
-    point, memo, n_params = {}, {}, 0
-    for v in value_vars:
-        val = np.asarray(ip[v.name], dtype=float)
-        point[v.name] = val
+    memo = {}
+    for v, val in zip(inputs, at):
+        val = np.asarray(val, dtype=float)
         ids = np.empty(val.shape, dtype=object)
         for k in np.ndindex(val.shape):
             ids[k] = w.emit("new_var", repr(float(val[k])))
         memo[v] = ("t", ids)
-        n_params += val.size
 
     # Fixed once: `memo` grows to hold every intermediate, and asking again
     # would treat those as graph inputs and walk nothing.
-    nodes = io_toposort(list(memo), [logp, *pointwise])
+    nodes = io_toposort(list(memo), outputs)
 
     tainted = set(memo)
     for node in nodes:
@@ -766,14 +756,36 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
     for node in nodes:
         note(node)
 
-    root = memo[logp]
+    return w, [get(o) for o in outputs]
+
+
+def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
+    """Write the model's tape. Returns the parameter count and what `outputs` named.
+
+    With `log_lik`, each observed variable's own log-likelihood is lowered beside
+    the density, elementwise, and named on an `outputs` line — the terms
+    `az.loo` reads. The two graphs share their subexpressions and the tape
+    numbers equal expressions into one node, so on five of the seven models here
+    the terms add no node at all and the module grows 1.35–1.43x, for the second
+    forward pass alone. Where the density contracts (`matrix_regression`,
+    `lkj_mvnormal`) the per-observation terms are their own nodes and it is
+    2.35–2.65x, which is the reason this can be turned off.
+    """
+    logp = model.logp(sum=True)
+    pointwise = model.logp(vars=model.observed_RVs, sum=False) if log_lik else []
+    logp, *pointwise = _stabilize([logp, *pointwise])
+    value_vars = model.value_vars
+    ip = trace_at if trace_at is not None else model.initial_point()
+    w, (root, *terms) = lower_graph(
+        value_vars, [logp, *pointwise], [ip[v.name] for v in value_vars], on_node=on_node)
+    n_params = sum(np.size(ip[v.name]) for v in value_vars)
+
     assert is_tape(root), "logp folded to a constant"
     root_id = int(np.asarray(root[1]).item())
 
     # One entry per observed variable, in the order their terms are written.
     outputs, groups = [], []
-    for rv, term in zip(model.observed_RVs, pointwise):
-        kind, vals = get(term)
+    for rv, (kind, vals) in zip(model.observed_RVs, terms):
         vals = np.atleast_1d(np.asarray(vals))
         for k in np.ndindex(vals.shape):
             # A term that does not reach a parameter is a constant, and the
@@ -781,7 +793,7 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
             outputs.append(int(vals[k]) if kind == "t" else w.const_node(float(vals[k])))
         groups.append({"name": rv.name, "shape": list(vals.shape)})
 
-    at = test_at if test_at is not None else point
+    at = test_at if test_at is not None else ip
     flat = np.concatenate([np.asarray(at[v.name], dtype=float).ravel() for v in value_vars])
     header = [f"n_params {n_params}", "test_params " + " ".join(repr(float(x)) for x in flat)]
     tail = [f"root {root_id}"]
