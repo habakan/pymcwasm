@@ -113,8 +113,18 @@ are everything a page needs; there is no other state.
 - **`paramNames`** and **`initialPoint`** — what the columns are called, and a
   starting point the sampler accepts.
 
-Building one needs Python, PyMC and a tapewasm checkout — `build/README.md` —
-which is why these are committed. Reading one needs nothing.
+Building one needs Python, PyMC and Node, and no Rust: the emitter is npm's
+`tapewasm`, resolved from the working directory. A model file defines `model`,
+or `make_model(data)` as posteriordb's do:
+
+```
+npm install tapewasm
+pip install ".[build]"
+pymcwasm-build model.py out/ --data data.json   # out/model.wasm, out/meta.json
+```
+
+`--reroll always` trades gradient speed for a smaller module, and `--no-log-lik`
+leaves out the per-observation terms. Reading an artifact needs nothing.
 
 ### What a page does with one, in full
 
@@ -173,7 +183,16 @@ checking, and eight_schools' stored `mu` sat a third of an sd from its own
 long-run value. It also records the versions that produced it, since the number
 moves with nutpie and not only with this code.
 
-Both are run by hand — `python src/pymcwasm/lowering.py` and `npm test` — when
+**Beyond these seven**, `scripts/posteriordb.py` lowers every
+[posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
+implementation and checks its gradient the same way. 76 of 83 agree with PyMC to
+1e-13 or better, all 35 that have a reference posterior among them. The other
+seven: five are refused (`Shape`, `BetaInc`, `Maximum`, a discrete parameter, an
+axis the lowering gets wrong), `prostate`'s 2 MB module panics the interpreter the
+check runs it in, and `lsat`'s gradient is NaN. 36 of the 76 — radon, kidiq and others whose data repeats rows — need a
+tapewasm newer than 0.3.3.
+
+All three are run by hand — `python src/pymcwasm/lowering.py`, `scripts/posteriordb.py` and `npm test` — when
 the emitter or the lowering moves, rather than on every commit. What they check
 changes with those two and with nothing else here, and three browser engines is
 a large install to pay for per push.
@@ -194,7 +213,7 @@ wasm.
 
 ```
 src/pymcwasm/      the package a Pyodide page imports, and the lowering
-build/             turns a model into an artifact (needs a tapewasm checkout)
+build/             the seven artifacts' build, with nutpie's reference beside each
 artifacts/         seven of them, committed
 examples/browser/  the precompiled path
 examples/pyodide/  the in-page path
