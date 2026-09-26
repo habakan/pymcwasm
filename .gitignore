@@ -5,3 +5,9 @@ demo.webm
 # `--with` list. The artifact is the three files beside them.
 artifacts/*/model.tape
 uv.lock
+
+# JupyterLite's build, and what build.sh copies into files/ for it.
+examples/jupyterlite/_output
+examples/jupyterlite/.jupyterlite.doit.db
+examples/jupyterlite/files/tapewasm
+examples/jupyterlite/files/*.whl
