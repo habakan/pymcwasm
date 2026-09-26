@@ -678,10 +678,16 @@ def _shape(op, node, ins, cx):
 
 @lowers("MakeVector", "Join")
 def _concat(op, node, ins, cx):
-    join = op_name(op) == "Join"
-    arrs = [np.asarray(x[1]) for x in ins if not (len(ins) > 1 and x is ins[0] and join)]
+    axis = 0
+    if op_name(op) == "Join":
+        # Newer PyTensor holds the axis on the op; older passes it as a first, 0-d input.
+        if getattr(op, "axis", None) is not None:
+            axis = op.axis
+        else:
+            axis, ins = int(np.asarray(ins[0][1]).item()), ins[1:]
     kind = "t" if any(is_tape(x) for x in ins) else "c"
-    return (kind, np.concatenate([np.atleast_1d(a) for a in arrs]))
+    arrs = [np.atleast_1d(np.asarray(x[1])) for x in ins]
+    return (kind, np.concatenate(arrs, axis=axis))
 
 
 def _eval_float(var):
