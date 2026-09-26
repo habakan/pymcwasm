@@ -19,6 +19,7 @@ pymcwasm-build = "pymcwasm.build:main"
 # itself runs inside Pyodide, where PyMC is installed by the page.
 build = ["pymc", "scipy", "nutpie", "pandas"]
 test = ["pymc", "arviz", "pytest"]
+linker = ["pymc", "scipy", "wasmtime"]
 
 [build-system]
 requires = ["hatchling"]

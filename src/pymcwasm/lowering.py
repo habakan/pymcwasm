@@ -20,6 +20,8 @@ import os
 import subprocess
 import sys
 
+from types import SimpleNamespace
+
 import numpy as np
 import pymc as pm
 try:
@@ -152,6 +154,16 @@ COMPARISON = {
 
 UNARY_TEST = {"Invert", "IsNan", "IsInf"}
 
+
+def compare(name, vals):
+    if len(vals) == 1:
+        r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
+    else:
+        r = vals[0]
+        for v in vals[1:]:
+            r = COMPARISON[name](r, v)
+    return np.asarray(r).astype(float)
+
 # Comparisons a tape value reached, folded at the trace point. Vacuous for a bounds
 # check after the transforms, or for a test of a measure-zero event.
 FOLDED = []
@@ -164,8 +176,9 @@ PASSTHROUGH = {
 
 
 class Lowerer:
-    def __init__(self, w):
+    def __init__(self, w, guards=None):
         self.w = w
+        self.guards = guards
 
     def binary(self, name, a, b):
         node_op, c_right, c_left, npf = BINARY[name]
@@ -234,19 +247,17 @@ class Lowerer:
         if name == "Switch":
             return self.select(ins[0], ins[1], ins[2])
         if name in COMPARISON:
-            # On a tape value it is a bounds check, constant after the transforms, so
-            # it folds to what it is at the trace point: `value < 0` guards HalfFlat.
-            if any(is_tape(x) for x in ins):
-                FOLDED.append(name)
+            # Folded to what it is at the trace point: in a logp a bounds check, constant
+            # after the transforms (`value < 0` guards HalfFlat). A guard list records it,
+            # for a caller that has to check the branch still holds at another point.
             vals = [np.vectorize(lambda i: self.w.values[int(i)], otypes=[float])(x[1])
                     if is_tape(x) else np.asarray(x[1]) for x in ins]
-            if len(vals) == 1:
-                r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
-            else:
-                r = vals[0]
-                for v in vals[1:]:
-                    r = COMPARISON[name](r, v)
-            return ("c", np.asarray(r).astype(float))
+            r = compare(name, vals)
+            if any(is_tape(x) for x in ins):
+                FOLDED.append(name)
+                if self.guards is not None:
+                    self.guards.append((name, ins, r))
+            return ("c", r)
         if name == "Second":
             return ins[1]
         if name in ("Identity", "Cast", "ScalarIdentity"):
@@ -466,6 +477,213 @@ class Lowerer:
         return ("t", out if out_shape else np.array(out.item(), dtype=object))
 
 
+# How each op becomes tape values, by op name: `f(op, node, ins, cx)` gets the
+# inputs already lowered, as ("c", floats) or ("t", node ids), and returns the output.
+LOWER = {}
+
+
+def lowers(*names):
+    def register(f):
+        for n in names:
+            LOWER[n] = f
+        return f
+    return register
+
+
+def rule_for(op):
+    name, inner = op_name(op), getattr(op, "scalar_op", None)
+    if name == "CAReduce" and op_name(inner) == "Add":
+        return "Sum"
+    if name not in LOWER and inner is not None:
+        return "Elemwise"
+    return name
+
+
+def _index(x):
+    if is_tape(x):
+        raise NotImplementedError("an index that depends on a parameter")
+    return x[1] if isinstance(x[1], slice) or x[1] is None else np.asarray(x[1]).astype(int)
+
+
+@lowers("All", "Any")
+def _all_any(op, node, ins, cx):
+    a = ins[0]
+    assert not is_tape(a), "a bounds check that reached a parameter"
+    reduce = np.all if op_name(op) == "All" else np.any
+    axis = getattr(op, "axis", None)
+    axis = tuple(axis) if isinstance(axis, (list, tuple)) else axis
+    return ("c", np.asarray(reduce(np.asarray(a[1]) != 0, axis=axis), dtype=float))
+
+
+@lowers("Sum")
+def _sum(op, node, ins, cx):
+    return cx.low.reduce_sum(ins[0], op.axis)
+
+
+@lowers("Elemwise")
+def _elemwise(op, node, ins, cx):
+    inner = op.scalar_op
+    if op_name(inner) != "Composite":
+        return cx.low.scalar_op(op_name(inner), ins)
+    # A fused run of scalar ops: lower its own graph over the same inputs.
+    if len(inner.fgraph.outputs) != 1:
+        raise NotImplementedError("a Composite with several outputs")
+    vals = dict(zip(inner.fgraph.inputs, ins))
+    for n in inner.fgraph.toposort():
+        args = [vals[i] if i in vals else ("c", np.asarray(i.data, dtype=float)) for i in n.inputs]
+        vals[n.outputs[0]] = cx.low.scalar_op(op_name(n.op), args)
+    return vals[inner.fgraph.outputs[0]]
+
+
+@lowers("DimShuffle")
+def _dimshuffle_op(op, node, ins, cx):
+    a = ins[0]
+    arr = np.asarray(a[1])
+    return (a[0], op.perform_shuffle(arr) if hasattr(op, "perform_shuffle") else _dimshuffle(op, arr))
+
+
+@lowers("Subtensor", "AdvancedSubtensor1", "AdvancedSubtensor")
+def _subtensor(op, node, ins, cx):
+    a = ins[0]
+    if op_name(op) == "Subtensor":
+        keys = static_index(op, node.inputs, cx.resolve_scalar)
+    else:
+        keys = tuple(_index(x) for x in ins[1:])
+    return (a[0], np.asarray(a[1])[keys if len(keys) > 1 else keys[0]])
+
+
+@lowers("Dot", "Dot22", "Gemv", "CGemv", "BatchedDot")
+def _dot(op, node, ins, cx):
+    # CGemv is `beta * y + alpha * A @ x`; PyTensor emits it with the
+    # scaling already folded, so the two operands are the last inputs.
+    return cx.low.dot(ins[-2], ins[-1])
+
+
+@lowers("CumOp")
+def _cumop(op, node, ins, cx):
+    a = ins[0]
+    arr = np.asarray(a[1])
+    axis = op.axis if op.axis is not None else 0
+    flat = arr if op.axis is not None else arr.ravel()
+    out = np.empty(flat.shape, dtype=object if is_tape(a) else float)
+    combine = "Add" if getattr(op, "mode", "add") == "add" else "Mul"
+    moved = np.moveaxis(flat, axis, 0)
+    res = np.moveaxis(out, axis, 0)
+    for k in np.ndindex(moved.shape[1:]):
+        acc = (a[0], np.array(moved[(0,) + k], dtype=moved.dtype))
+        res[(0,) + k] = np.asarray(acc[1]).item()
+        for i in range(1, moved.shape[0]):
+            nxt = (a[0], np.array(moved[(i,) + k], dtype=moved.dtype))
+            acc = cx.low.binary(combine, acc, nxt)
+            res[(i,) + k] = np.asarray(acc[1]).item()
+    return (a[0], out.reshape(arr.shape))
+
+
+@lowers("SolveTriangular", "CholeskySolve")
+def _solve_triangular(op, node, ins, cx):
+    return cx.low.solve_triangular(
+        ins[0], ins[1], getattr(op, "lower", True), getattr(op, "b_ndim", 1),
+    )
+
+
+@lowers("ExtractDiag")
+def _extract_diag(op, node, ins, cx):
+    a = ins[0]
+    arr = np.asarray(a[1])
+    offset = getattr(op, "offset", 0)
+    ax1 = getattr(op, "axis1", 0)
+    ax2 = getattr(op, "axis2", 1)
+    return (a[0], np.diagonal(arr, offset, ax1, ax2).copy())
+
+
+@lowers("AllocDiag")
+def _alloc_diag(op, node, ins, cx):
+    a = ins[0]
+    arr = np.asarray(a[1])
+    out = np.zeros(arr.shape + (arr.shape[-1],), dtype=arr.dtype)
+    for b in np.ndindex(arr.shape[:-1]):
+        for i in range(arr.shape[-1]):
+            out[b + (i, i)] = arr[b + (i,)]
+    if is_tape(a):
+        for idx in np.ndindex(out.shape):
+            if out[idx] == 0:
+                out[idx] = cx.low.w.const_node(0.0)
+    return (a[0], out)
+
+
+@lowers("Cholesky")
+def _cholesky(op, node, ins, cx):
+    return cx.low.cholesky(ins[0], getattr(op, "lower", True))
+
+
+@lowers("Convolve1d")
+def _convolve1d(op, node, ins, cx):
+    return cx.low.convolve1d(*ins)
+
+
+@lowers("AdvancedIncSubtensor", "AdvancedIncSubtensor1", "IncSubtensor")
+def _inc_subtensor(op, node, ins, cx):
+    base, values = ins[0], ins[1]
+    if op_name(op) == "IncSubtensor":
+        key = static_index(op, node.inputs[1:], cx.resolve_scalar)
+        if len(key) == 1:
+            key = key[0]
+    else:
+        keys = tuple(_index(x) for x in ins[2:])
+        key = keys if len(keys) > 1 else keys[0]
+    arr = np.asarray(base[1])
+    setting = getattr(op, "set_instead_of_inc", True)
+    if not is_tape(base) and not is_tape(values):
+        out = np.array(arr, dtype=float)
+        if setting:
+            out[key] = np.asarray(values[1], dtype=float)
+        else:
+            # `out[key] +=` adds a repeated index once; a gradient of `x[idx]` repeats them.
+            np.add.at(out, key, np.asarray(values[1], dtype=float))
+        return ("c", out)
+    # Mixed: the destination has to become tape nodes to hold them.
+    out = np.empty(arr.shape, dtype=object)
+    for k in np.ndindex(arr.shape):
+        out[k] = arr[k] if is_tape(base) else cx.low.w.const_node(arr[k])
+    v = np.asarray(values[1])
+    promoted = np.empty(v.shape, dtype=object)
+    for k in np.ndindex(v.shape):
+        promoted[k] = v[k] if is_tape(values) else cx.low.w.const_node(v[k])
+    if setting:
+        out[key] = promoted
+    else:
+        # Each occurrence of an index adds in turn, as np.add.at does.
+        at = np.arange(out.size).reshape(out.shape)[key]
+        wide = np.broadcast_to(promoted, np.shape(at))
+        flat = out.reshape(-1)
+        for k in np.ndindex(np.shape(at)):
+            flat[at[k]] = cx.low.w.emit("add", flat[at[k]], wide[k])
+    return ("t", out)
+
+
+@lowers("Alloc")
+def _alloc(op, node, ins, cx):
+    a = ins[0]
+    shape = tuple(int(np.asarray(x[1]).item()) for x in ins[1:])
+    arr = np.broadcast_to(np.asarray(a[1]), shape)
+    return (a[0], np.array(arr, dtype=object) if is_tape(a) else np.array(arr, dtype=float))
+
+
+@lowers("Shape", "Shape_i")
+def _shape(op, node, ins, cx):
+    # Shapes are fixed once traced; a caller with another shape traces again.
+    shape = np.shape(ins[0][1])
+    return ("c", np.array(shape if op_name(op) == "Shape" else shape[op.i], dtype=float))
+
+
+@lowers("MakeVector", "Join")
+def _concat(op, node, ins, cx):
+    join = op_name(op) == "Join"
+    arrs = [np.asarray(x[1]) for x in ins if not (len(ins) > 1 and x is ins[0] and join)]
+    kind = "t" if any(is_tape(x) for x in ins) else "c"
+    return (kind, np.concatenate([np.atleast_1d(a) for a in arrs]))
+
+
 def _eval_float(var):
     """A constant subgraph's value, computed in float64 where it is integer arithmetic.
 
@@ -509,6 +727,69 @@ def _stabilize(outputs):
     return fg.outputs
 
 
+def lower_graph(inputs, outputs, at, guards=None, on_node=None):
+    """Lower `outputs` over `inputs`, each a tape leaf traced at its value in `at`.
+
+    Returns the writer and each output lowered. A comparison that reaches an input
+    folds at `at`; `guards`, a list, collects each as `(op name, inputs, result)`.
+    """
+    w = TapeWriter()
+    low = Lowerer(w, guards)
+
+    # Leaves first, in the order the raveled parameter vector uses.
+    memo = {}
+    for v, val in zip(inputs, at):
+        val = np.asarray(val, dtype=float)
+        ids = np.empty(val.shape, dtype=object)
+        for k in np.ndindex(val.shape):
+            ids[k] = w.emit("new_var", repr(float(val[k])))
+        memo[v] = ("t", ids)
+
+    # Fixed once: `memo` grows to hold every intermediate, and asking again
+    # would treat those as graph inputs and walk nothing.
+    nodes = io_toposort(list(memo), outputs)
+
+    tainted = set(memo)
+    for node in nodes:
+        if any(i in tainted for i in node.inputs):
+            tainted.update(node.outputs)
+
+    def get(var):
+        if var in memo:
+            return memo[var]
+        if not hasattr(var.type, "dtype"):  # a slice or None in an index
+            return ("c", var.eval())
+        return ("c", _eval_float(var))
+
+    def resolve_scalar(var):
+        got = get(var)
+        assert not is_tape(got), "an index that depends on a parameter"
+        return got[1]
+
+    def note(node):
+        if on_node is not None and node.outputs[0] in memo:
+            on_node(node, memo[node.outputs[0]], w)
+
+    cx = SimpleNamespace(low=low, resolve_scalar=resolve_scalar)
+    for node in nodes:
+        if not any(i in tainted for i in node.inputs):
+            continue
+        ins = [get(i) for i in node.inputs]
+        if op_name(node.op) in PASSTHROUGH:
+            memo[node.outputs[0]] = ins[0]
+            continue
+        op = getattr(node.op, "core_op", None) or node.op
+        name = rule_for(op)
+        if name not in LOWER:
+            raise NotImplementedError(f"op {name}")
+        memo[node.outputs[0]] = LOWER[name](op, node, ins, cx)
+
+    for node in nodes:
+        note(node)
+
+    return w, [get(o) for o in outputs]
+
+
 def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
     """Write the model's tape. Returns the parameter count and what `outputs` named.
 
@@ -526,207 +807,16 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
     logp, *pointwise = _stabilize([logp, *pointwise])
     value_vars = model.value_vars
     ip = trace_at if trace_at is not None else model.initial_point()
+    w, (root, *terms) = lower_graph(
+        value_vars, [logp, *pointwise], [ip[v.name] for v in value_vars], on_node=on_node)
+    n_params = sum(np.size(ip[v.name]) for v in value_vars)
 
-    w = TapeWriter()
-    low = Lowerer(w)
-
-    # Leaves first, in the order the raveled parameter vector uses.
-    point, memo, n_params = {}, {}, 0
-    for v in value_vars:
-        val = np.asarray(ip[v.name], dtype=float)
-        point[v.name] = val
-        ids = np.empty(val.shape, dtype=object)
-        for k in np.ndindex(val.shape):
-            ids[k] = w.emit("new_var", repr(float(val[k])))
-        memo[v] = ("t", ids)
-        n_params += val.size
-
-    # Fixed once: `memo` grows to hold every intermediate, and asking again
-    # would treat those as graph inputs and walk nothing.
-    nodes = io_toposort(list(memo), [logp, *pointwise])
-
-    tainted = set(memo)
-    for node in nodes:
-        if any(i in tainted for i in node.inputs):
-            tainted.update(node.outputs)
-
-    def get(var):
-        if var in memo:
-            return memo[var]
-        return ("c", _eval_float(var))
-
-    def resolve_scalar(var):
-        got = get(var)
-        assert not is_tape(got), "an index that depends on a parameter"
-        return got[1]
-
-    def note(node):
-        if on_node is not None and node.outputs[0] in memo:
-            on_node(node, memo[node.outputs[0]], w)
-
-    for node in nodes:
-        if not any(i in tainted for i in node.inputs):
-            continue
-        op = node.op
-        name = op_name(op)
-        ins = [get(i) for i in node.inputs]
-
-        if name in PASSTHROUGH:
-            memo[node.outputs[0]] = ins[0]
-            continue
-        core = getattr(op, "core_op", None)
-        if core is not None:
-            op, name = core, op_name(core)
-        inner = getattr(op, "scalar_op", None)
-        if name in ("All", "Any"):
-            a = ins[0]
-            assert not is_tape(a), "a bounds check that reached a parameter"
-            reduce = np.all if name == "All" else np.any
-            axis = getattr(op, "axis", None)
-            axis = tuple(axis) if isinstance(axis, (list, tuple)) else axis
-            memo[node.outputs[0]] = (
-                "c", np.asarray(reduce(np.asarray(a[1]) != 0, axis=axis), dtype=float)
-            )
-            continue
-        if name == "Sum" or (name == "CAReduce" and op_name(inner) == "Add"):
-            memo[node.outputs[0]] = low.reduce_sum(ins[0], op.axis)
-            continue
-        if inner is not None:  # Elemwise
-            memo[node.outputs[0]] = low.scalar_op(op_name(inner), ins)
-            continue
-        if name == "DimShuffle":
-            a = ins[0]
-            arr = np.asarray(a[1])
-            memo[node.outputs[0]] = (a[0], op.perform_shuffle(arr) if hasattr(op, "perform_shuffle") else _dimshuffle(op, arr))
-            continue
-        if name in ("Subtensor", "AdvancedSubtensor1", "AdvancedSubtensor"):
-            a = ins[0]
-            if name == "Subtensor":
-                keys = static_index(op, node.inputs, resolve_scalar)
-            else:
-                keys = tuple(np.asarray(x[1]).astype(int) if not is_tape(x) else None for x in ins[1:])
-            memo[node.outputs[0]] = (a[0], np.asarray(a[1])[keys if len(keys) > 1 else keys[0]])
-            continue
-        if name in ("Dot", "Dot22", "Gemv", "CGemv", "BatchedDot"):
-            # CGemv is `beta * y + alpha * A @ x`; PyTensor emits it with the
-            # scaling already folded, so the two operands are the last inputs.
-            memo[node.outputs[0]] = low.dot(ins[-2], ins[-1])
-            continue
-        if name == "CumOp":
-            a = ins[0]
-            arr = np.asarray(a[1])
-            axis = op.axis if op.axis is not None else 0
-            flat = arr if op.axis is not None else arr.ravel()
-            out = np.empty(flat.shape, dtype=object if is_tape(a) else float)
-            combine = "Add" if getattr(op, "mode", "add") == "add" else "Mul"
-            moved = np.moveaxis(flat, axis, 0)
-            res = np.moveaxis(out, axis, 0)
-            for k in np.ndindex(moved.shape[1:]):
-                acc = (a[0], np.array(moved[(0,) + k], dtype=moved.dtype))
-                res[(0,) + k] = np.asarray(acc[1]).item()
-                for i in range(1, moved.shape[0]):
-                    nxt = (a[0], np.array(moved[(i,) + k], dtype=moved.dtype))
-                    acc = low.binary(combine, acc, nxt)
-                    res[(i,) + k] = np.asarray(acc[1]).item()
-            memo[node.outputs[0]] = (a[0], out.reshape(arr.shape))
-            continue
-        if name in ("SolveTriangular", "CholeskySolve"):
-            memo[node.outputs[0]] = low.solve_triangular(
-                ins[0], ins[1], getattr(op, "lower", True),
-                getattr(op, "b_ndim", 1),
-            )
-            continue
-        if name == "ExtractDiag":
-            a = ins[0]
-            arr = np.asarray(a[1])
-            offset = getattr(op, "offset", 0)
-            ax1 = getattr(op, "axis1", 0)
-            ax2 = getattr(op, "axis2", 1)
-            memo[node.outputs[0]] = (a[0], np.diagonal(arr, offset, ax1, ax2).copy())
-            continue
-        if name == "AllocDiag":
-            a = ins[0]
-            arr = np.asarray(a[1])
-            out = np.zeros(arr.shape + (arr.shape[-1],), dtype=arr.dtype)
-            for b in np.ndindex(arr.shape[:-1]):
-                for i in range(arr.shape[-1]):
-                    out[b + (i, i)] = arr[b + (i,)]
-            if is_tape(a):
-                for idx in np.ndindex(out.shape):
-                    if out[idx] == 0:
-                        out[idx] = low.w.const_node(0.0)
-            memo[node.outputs[0]] = (a[0], out)
-            continue
-        if name == "Cholesky":
-            memo[node.outputs[0]] = low.cholesky(ins[0], getattr(op, "lower", True))
-            continue
-        if name == "Convolve1d":
-            memo[node.outputs[0]] = low.convolve1d(*ins)
-            continue
-        if name in ("AdvancedIncSubtensor", "AdvancedIncSubtensor1", "IncSubtensor"):
-            base, values = ins[0], ins[1]
-            if name == "IncSubtensor":
-                key = static_index(op, node.inputs[1:], resolve_scalar)
-                if len(key) == 1:
-                    key = key[0]
-            else:
-                keys = tuple(np.asarray(x[1]).astype(int) for x in ins[2:])
-                key = keys if len(keys) > 1 else keys[0]
-            arr = np.asarray(base[1])
-            setting = getattr(op, "set_instead_of_inc", True)
-            if not is_tape(base) and not is_tape(values):
-                out = np.array(arr, dtype=float)
-                if setting:
-                    out[key] = np.asarray(values[1], dtype=float)
-                else:
-                    out[key] += np.asarray(values[1], dtype=float)
-                memo[node.outputs[0]] = ("c", out)
-                continue
-            # Mixed: the destination has to become tape nodes to hold them.
-            out = np.empty(arr.shape, dtype=object)
-            for k in np.ndindex(arr.shape):
-                out[k] = arr[k] if is_tape(base) else low.w.const_node(arr[k])
-            v = np.asarray(values[1])
-            promoted = np.empty(v.shape, dtype=object)
-            for k in np.ndindex(v.shape):
-                promoted[k] = v[k] if is_tape(values) else low.w.const_node(v[k])
-            if setting:
-                out[key] = promoted
-            else:
-                selected = np.asarray(out[key], dtype=object)
-                wide = np.broadcast_to(promoted, selected.shape)
-                summed = np.empty(selected.shape, dtype=object)
-                for k in np.ndindex(selected.shape):
-                    summed[k] = low.w.emit("add", selected[k], wide[k])
-                out[key] = summed
-            memo[node.outputs[0]] = ("t", out)
-            continue
-        if name == "Alloc":
-            a = ins[0]
-            shape = tuple(int(np.asarray(x[1]).item()) for x in ins[1:])
-            arr = np.broadcast_to(np.asarray(a[1]), shape)
-            memo[node.outputs[0]] = (a[0], np.array(arr, dtype=object) if is_tape(a) else np.array(arr, dtype=float))
-            continue
-        if name in ("MakeVector", "Join"):
-            arrs = [np.asarray(x[1]) for x in ins if not (len(ins) > 1 and x is ins[0] and name == "Join")]
-            if any(is_tape(x) for x in ins):
-                memo[node.outputs[0]] = ("t", np.concatenate([np.atleast_1d(a) for a in arrs]))
-            else:
-                memo[node.outputs[0]] = ("c", np.concatenate([np.atleast_1d(a) for a in arrs]))
-            continue
-        raise NotImplementedError(f"op {name}")
-
-    for node in nodes:
-        note(node)
-
-    root = memo[logp]
     assert is_tape(root), "logp folded to a constant"
     root_id = int(np.asarray(root[1]).item())
 
     # One entry per observed variable, in the order their terms are written.
     outputs, groups = [], []
-    for rv, term in zip(model.observed_RVs, pointwise):
-        kind, vals = get(term)
+    for rv, (kind, vals) in zip(model.observed_RVs, terms):
         vals = np.atleast_1d(np.asarray(vals))
         for k in np.ndindex(vals.shape):
             # A term that does not reach a parameter is a constant, and the
@@ -734,7 +824,7 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
             outputs.append(int(vals[k]) if kind == "t" else w.const_node(float(vals[k])))
         groups.append({"name": rv.name, "shape": list(vals.shape)})
 
-    at = test_at if test_at is not None else point
+    at = test_at if test_at is not None else ip
     flat = np.concatenate([np.asarray(at[v.name], dtype=float).ravel() for v in value_vars])
     header = [f"n_params {n_params}", "test_params " + " ".join(repr(float(x)) for x in flat)]
     tail = [f"root {root_id}"]
@@ -747,12 +837,12 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
 
 
 def _dimshuffle(op, arr):
+    # `new_order` names the input's own axes, so the dropped ones go last and then
+    # away, rather than being squeezed first and shifting the numbering.
     arr = np.asarray(arr)
-    for d in sorted(getattr(op, "drop", []), reverse=True):
-        arr = np.squeeze(arr, axis=d)
     order = [o for o in op.new_order if o != "x"]
-    if order:
-        arr = np.transpose(arr, order)
+    arr = np.transpose(arr, order + list(getattr(op, "drop", [])))
+    arr = arr.reshape(arr.shape[:len(order)])
     for i, o in enumerate(op.new_order):
         if o == "x":
             arr = np.expand_dims(arr, axis=i)
