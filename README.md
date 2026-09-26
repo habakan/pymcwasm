@@ -210,6 +210,12 @@ f = pytensor.function([x], pt.exp(x).sum(), mode="WASM")
 model.compile_dlogp(mode="WASM")(point)     # PyTensor's own gradient graph, forward
 ```
 
+Under Pyodide — JupyterLite, marimo — PyTensor has no C compiler and falls back to
+its Python linker. There the page's tapewasm emits the module and the browser runs
+it, after one `await pymcwasm.linker.load()`; PyMC's own NUTS then samples 3.8–6.7x
+faster on three of the models here (`npm run test:linker-pyodide`, Chromium, a
+worker, 300 draws).
+
 The tape has no branch, so a comparison on an input is taken the way it was traced;
 its operands come back beside the outputs, and a call that goes the other way traces
 again. Input shapes are fixed per trace the same way, and only float inputs become
