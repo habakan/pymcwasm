@@ -185,12 +185,12 @@ moves with nutpie and not only with this code.
 
 **Beyond these seven**, `scripts/posteriordb.py` lowers every
 [posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
-implementation and checks its gradient the same way. 76 of 83 agree with PyMC to
-1e-13 or better, all 35 that have a reference posterior among them. The other
-seven: five are refused (`Shape`, `BetaInc`, `Maximum`, a discrete parameter, an
-axis the lowering gets wrong), `prostate`'s 2 MB module panics the interpreter the
-check runs it in, and `lsat`'s gradient is NaN. 36 of the 76 — radon, kidiq and others whose data repeats rows — need a
-tapewasm newer than 0.3.3.
+implementation and checks its gradient the same way. 77 of 83 agree with PyMC to
+1e-13 or better, all 35 that have a reference posterior among them. Of the other
+six, four are refused (`AllocEmpty`, `BetaInc`, `Maximum`, a discrete parameter),
+`prostate`'s 2 MB module panics the interpreter the check runs it in, and `lsat`'s
+gradient is NaN. 36 of the 77 — radon, kidiq and others whose data repeats rows —
+need tapewasm 0.3.4.
 
 All three are run by hand — `python src/pymcwasm/lowering.py`, `scripts/posteriordb.py` and `npm test` — when
 the emitter or the lowering moves, rather than on every commit. What they check
@@ -198,6 +198,23 @@ changes with those two and with nothing else here, and three browser engines is
 a large install to pay for per push.
 
 Not a speed claim, in either direction.
+
+## As a PyTensor backend
+
+`import pymcwasm.linker` registers `mode="WASM"`: any `pytensor.function` is traced
+at its first inputs, emitted by npm's tapewasm and run under `wasmtime`.
+
+```python
+import pymcwasm.linker
+f = pytensor.function([x], pt.exp(x).sum(), mode="WASM")
+model.compile_dlogp(mode="WASM")(point)     # PyTensor's own gradient graph, forward
+```
+
+The tape has no branch, so a comparison on an input is taken the way it was traced;
+its operands come back beside the outputs, and a call that goes the other way traces
+again. Input shapes are fixed per trace the same way, and only float inputs become
+tape leaves. `tests/test_linker.py` holds it to PyTensor's own backend, graph by
+graph and on the seven models' logp and gradient.
 
 ## How it works
 
