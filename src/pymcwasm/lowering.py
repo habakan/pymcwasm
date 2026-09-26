@@ -154,6 +154,16 @@ COMPARISON = {
 
 UNARY_TEST = {"Invert", "IsNan", "IsInf"}
 
+
+def compare(name, vals):
+    if len(vals) == 1:
+        r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
+    else:
+        r = vals[0]
+        for v in vals[1:]:
+            r = COMPARISON[name](r, v)
+    return np.asarray(r).astype(float)
+
 # Comparisons a tape value reached, folded at the trace point. Vacuous for a bounds
 # check after the transforms, or for a test of a measure-zero event.
 FOLDED = []
@@ -166,9 +176,9 @@ PASSTHROUGH = {
 
 
 class Lowerer:
-    def __init__(self, w, fold_comparisons=True):
+    def __init__(self, w, guards=None):
         self.w = w
-        self.fold_comparisons = fold_comparisons
+        self.guards = guards
 
     def binary(self, name, a, b):
         node_op, c_right, c_left, npf = BINARY[name]
@@ -237,21 +247,17 @@ class Lowerer:
         if name == "Switch":
             return self.select(ins[0], ins[1], ins[2])
         if name in COMPARISON:
-            # On a tape value it is a bounds check, constant after the transforms, so
-            # it folds to what it is at the trace point: `value < 0` guards HalfFlat.
-            if any(is_tape(x) for x in ins):
-                if not self.fold_comparisons:
-                    raise NotImplementedError(f"{name} on an input: the tape has no select to branch with")
-                FOLDED.append(name)
+            # Folded to what it is at the trace point: in a logp a bounds check, constant
+            # after the transforms (`value < 0` guards HalfFlat). A guard list records it,
+            # for a caller that has to check the branch still holds at another point.
             vals = [np.vectorize(lambda i: self.w.values[int(i)], otypes=[float])(x[1])
                     if is_tape(x) else np.asarray(x[1]) for x in ins]
-            if len(vals) == 1:
-                r = COMPARISON[name](vals[0]) if name in UNARY_TEST else vals[0]
-            else:
-                r = vals[0]
-                for v in vals[1:]:
-                    r = COMPARISON[name](r, v)
-            return ("c", np.asarray(r).astype(float))
+            r = compare(name, vals)
+            if any(is_tape(x) for x in ins):
+                FOLDED.append(name)
+                if self.guards is not None:
+                    self.guards.append((name, ins, r))
+            return ("c", r)
         if name == "Second":
             return ins[1]
         if name in ("Identity", "Cast", "ScalarIdentity"):
@@ -493,6 +499,12 @@ def rule_for(op):
     return name
 
 
+def _index(x):
+    if is_tape(x):
+        raise NotImplementedError("an index that depends on a parameter")
+    return x[1] if isinstance(x[1], slice) or x[1] is None else np.asarray(x[1]).astype(int)
+
+
 @lowers("All", "Any")
 def _all_any(op, node, ins, cx):
     a = ins[0]
@@ -510,7 +522,17 @@ def _sum(op, node, ins, cx):
 
 @lowers("Elemwise")
 def _elemwise(op, node, ins, cx):
-    return cx.low.scalar_op(op_name(op.scalar_op), ins)
+    inner = op.scalar_op
+    if op_name(inner) != "Composite":
+        return cx.low.scalar_op(op_name(inner), ins)
+    # A fused run of scalar ops: lower its own graph over the same inputs.
+    if len(inner.fgraph.outputs) != 1:
+        raise NotImplementedError("a Composite with several outputs")
+    vals = dict(zip(inner.fgraph.inputs, ins))
+    for n in inner.fgraph.toposort():
+        args = [vals[i] if i in vals else ("c", np.asarray(i.data, dtype=float)) for i in n.inputs]
+        vals[n.outputs[0]] = cx.low.scalar_op(op_name(n.op), args)
+    return vals[inner.fgraph.outputs[0]]
 
 
 @lowers("DimShuffle")
@@ -526,7 +548,7 @@ def _subtensor(op, node, ins, cx):
     if op_name(op) == "Subtensor":
         keys = static_index(op, node.inputs, cx.resolve_scalar)
     else:
-        keys = tuple(np.asarray(x[1]).astype(int) if not is_tape(x) else None for x in ins[1:])
+        keys = tuple(_index(x) for x in ins[1:])
     return (a[0], np.asarray(a[1])[keys if len(keys) > 1 else keys[0]])
 
 
@@ -607,7 +629,7 @@ def _inc_subtensor(op, node, ins, cx):
         if len(key) == 1:
             key = key[0]
     else:
-        keys = tuple(np.asarray(x[1]).astype(int) for x in ins[2:])
+        keys = tuple(_index(x) for x in ins[2:])
         key = keys if len(keys) > 1 else keys[0]
     arr = np.asarray(base[1])
     setting = getattr(op, "set_instead_of_inc", True)
@@ -616,7 +638,8 @@ def _inc_subtensor(op, node, ins, cx):
         if setting:
             out[key] = np.asarray(values[1], dtype=float)
         else:
-            out[key] += np.asarray(values[1], dtype=float)
+            # `out[key] +=` adds a repeated index once; a gradient of `x[idx]` repeats them.
+            np.add.at(out, key, np.asarray(values[1], dtype=float))
         return ("c", out)
     # Mixed: the destination has to become tape nodes to hold them.
     out = np.empty(arr.shape, dtype=object)
@@ -629,12 +652,12 @@ def _inc_subtensor(op, node, ins, cx):
     if setting:
         out[key] = promoted
     else:
-        selected = np.asarray(out[key], dtype=object)
-        wide = np.broadcast_to(promoted, selected.shape)
-        summed = np.empty(selected.shape, dtype=object)
-        for k in np.ndindex(selected.shape):
-            summed[k] = cx.low.w.emit("add", selected[k], wide[k])
-        out[key] = summed
+        # Each occurrence of an index adds in turn, as np.add.at does.
+        at = np.arange(out.size).reshape(out.shape)[key]
+        wide = np.broadcast_to(promoted, np.shape(at))
+        flat = out.reshape(-1)
+        for k in np.ndindex(np.shape(at)):
+            flat[at[k]] = cx.low.w.emit("add", flat[at[k]], wide[k])
     return ("t", out)
 
 
@@ -644,6 +667,13 @@ def _alloc(op, node, ins, cx):
     shape = tuple(int(np.asarray(x[1]).item()) for x in ins[1:])
     arr = np.broadcast_to(np.asarray(a[1]), shape)
     return (a[0], np.array(arr, dtype=object) if is_tape(a) else np.array(arr, dtype=float))
+
+
+@lowers("Shape", "Shape_i")
+def _shape(op, node, ins, cx):
+    # Shapes are fixed once traced; a caller with another shape traces again.
+    shape = np.shape(ins[0][1])
+    return ("c", np.array(shape if op_name(op) == "Shape" else shape[op.i], dtype=float))
 
 
 @lowers("MakeVector", "Join")
@@ -697,15 +727,14 @@ def _stabilize(outputs):
     return fg.outputs
 
 
-def lower_graph(inputs, outputs, at, fold_comparisons=True, on_node=None):
+def lower_graph(inputs, outputs, at, guards=None, on_node=None):
     """Lower `outputs` over `inputs`, each a tape leaf traced at its value in `at`.
 
-    Returns the writer and each output lowered. `fold_comparisons` is the logp
-    assumption that a comparison reaching an input is a bounds check; without it
-    one is refused, since the tape has no branch to take instead.
+    Returns the writer and each output lowered. A comparison that reaches an input
+    folds at `at`; `guards`, a list, collects each as `(op name, inputs, result)`.
     """
     w = TapeWriter()
-    low = Lowerer(w, fold_comparisons)
+    low = Lowerer(w, guards)
 
     # Leaves first, in the order the raveled parameter vector uses.
     memo = {}
@@ -728,6 +757,8 @@ def lower_graph(inputs, outputs, at, fold_comparisons=True, on_node=None):
     def get(var):
         if var in memo:
             return memo[var]
+        if not hasattr(var.type, "dtype"):  # a slice or None in an index
+            return ("c", var.eval())
         return ("c", _eval_float(var))
 
     def resolve_scalar(var):
@@ -806,12 +837,12 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
 
 
 def _dimshuffle(op, arr):
+    # `new_order` names the input's own axes, so the dropped ones go last and then
+    # away, rather than being squeezed first and shifting the numbering.
     arr = np.asarray(arr)
-    for d in sorted(getattr(op, "drop", []), reverse=True):
-        arr = np.squeeze(arr, axis=d)
     order = [o for o in op.new_order if o != "x"]
-    if order:
-        arr = np.transpose(arr, order)
+    arr = np.transpose(arr, order + list(getattr(op, "drop", [])))
+    arr = arr.reshape(arr.shape[:len(order)])
     for i, o in enumerate(op.new_order):
         if o == "x":
             arr = np.expand_dims(arr, axis=i)
