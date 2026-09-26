@@ -1,17 +1,17 @@
 # Regenerating the artifacts
 
 The demo does not need this. `artifacts/` is committed because the compile step
-needs Rust and a checkout of tapewasm, and asking that of someone who wants to
-see the thing run would defeat the point.
+needs PyMC and Node, and asking that of someone who wants to see the thing run
+would defeat the point.
 
 ```
-export TAPEWASM=/path/to/tapewasm   # a checkout of github.com/habakan/tapewasm
+npm install
 uv run --with pymc --with scipy --with nutpie \
   python build/build_artifact.py <model> artifacts/<model>
 ```
 
 `src/pymcwasm/lowering.py` walks the PyTensor graph of `model.logp()` and writes an
-instruction file; `build_artifact.py` runs tapewasm's emitter over it and records
+instruction file; `build_artifact.py` runs npm's tapewasm over it, as `pymcwasm-build` does, and records
 the buffer sizes a host needs, plus nutpie's posterior for the same model pushed
 back into the unconstrained space.
 
