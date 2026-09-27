@@ -198,7 +198,27 @@ the emitter moves, and weekly, and fails if a posterior in
 `scripts/posteriordb-passing.txt` stops agreeing. `npm test` is run by hand: three
 browser engines is a large install to pay for per push.
 
-Not a speed claim, in either direction.
+## How fast
+
+One model, one machine, so a shape rather than a benchmark: eight schools, non-centred,
+2 chains of 500 warmup and 500 draws run one after the other, on an Apple M3.
+
+| where | sampler | time |
+| --- | --- | --- |
+| JupyterLite, Chromium | PyMC's NUTS, PyTensor's Python linker | 5.8 s |
+| JupyterLite, Chromium | PyMC's NUTS, `mode="WASM"` | 1.2 s |
+| JupyterLite, Chromium | `pymcwasm.sample`, nuts-rs in the module | 0.02 s, after 0.21 s compiling |
+| CPython 3.13 | PyMC's NUTS, PyTensor's default backend | 0.39 s |
+| CPython 3.13 | nutpie, nuts-rs natively | 0.027 s, after 0.4–1.2 s compiling |
+
+The browser rows are one run each and include what `pm.sample` compiles; the CPython
+rows are the best of three, with PyTensor's compile cache warm. PyMC 6.3.2 and PyTensor
+3.3.2 on both sides; nutpie 0.16.11. `pm.sample` under PyMC 6 picks nutpie when it is
+installed, so the PyMC row passes `nuts_sampler="pymc"`.
+
+Under Pyodide the module is about a tenth of `pm.sample`'s time with `mode="WASM"`; the
+rest is PyMC's NUTS in Python, which is what `pymcwasm.sample` leaves out. On a model
+this small, drawing in the page and drawing with nutpie natively take about as long.
 
 ## As a PyTensor backend
 
