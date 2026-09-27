@@ -170,3 +170,40 @@ async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
         tw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
         int(chain),
     ).to_py()
+
+
+async def advi(handle, tw, init, n, mc_samples, learning_rate, seed, param_names,
+               snapshot_every=0, callback=None):
+    """Mean-field ADVI over a module compiled earlier, by tapewasm's `advi`.
+
+    `mu` and `sigma` are tapewasm's averages over the second half of the run, in
+    the unconstrained space; `elbo` is its estimate after each iteration.
+    `callback(iteration, mu)` is called at each of tapewasm's snapshots.
+    """
+    from pyodide.code import run_js
+    from pyodide.ffi import create_proxy
+
+    fit = run_js(
+        """
+        ((tw, h, init, n, mc, lr, seed, names, every, cb) => {
+            tw.setAotExports(h.exports);
+            const s = new tw.AotSampler(
+                h.built.nParams, h.built.scratchInit, h.built.layoutId, names,
+            );
+            const t0 = performance.now();
+            const onSnapshot = cb ? (iter, mu) => cb(iter, Array.from(mu)) : null;
+            const r = s.advi(new Float64Array(init), n, mc, lr, BigInt(seed), every, onSnapshot);
+            return { mu: Array.from(r.mu), sigma: Array.from(r.sigma),
+                     elbo: Array.from(r.elboTrace), ms: performance.now() - t0 };
+        })
+        """
+    )
+    proxy = None
+    if callback is not None:
+        proxy = create_proxy(lambda it, mu: callback(int(it), np.asarray(mu.to_py(), dtype=float)))
+    try:
+        return fit(tw, handle, list(init), int(n), int(mc_samples), float(learning_rate), int(seed),
+                   list(param_names), int(snapshot_every), proxy).to_py()
+    finally:
+        if proxy is not None:
+            proxy.destroy()

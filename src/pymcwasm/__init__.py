@@ -22,6 +22,11 @@ keeping when a page samples the same model more than once:
     compiled = await pymcwasm.compile(model)
     fit = await compiled.sample(draws=2000, seed=7)
 
+Mean-field ADVI runs on the same module, the way `pm.fit` does:
+
+    approx = await pymcwasm.fit(model, n=10000)
+    idata = approx.sample(1000)
+
 Draws are in the space the sampler works in, so a transformed parameter comes
 back under its value-variable name (`sigma_log__`, not `sigma`).
 
@@ -37,7 +42,8 @@ from . import lowering
 from . import _bridge
 from ._bridge import DEFAULT_TAPEWASM_PATH
 
-__all__ = ["Compiled", "Fit", "compile", "sample", "starting_point", "tape_for"]
+__all__ = ["Approximation", "Compiled", "Fit", "compile", "fit", "sample", "starting_point",
+           "tape_for"]
 
 
 def starting_point(model, seed=0, tries=50):
@@ -197,6 +203,37 @@ class Fit:
         )
 
 
+class Approximation:
+    """A mean-field Gaussian fitted by ADVI, over the unconstrained parameters.
+
+    As PyMC's: `mean` and `std` per unconstrained scalar (named in `names`), `hist`
+    the loss, the negative ELBO, per iteration, and `sample()` the draws in the
+    model's own space.
+    """
+
+    def __init__(self, names, mean, std, elbo, ms, compile_ms, lower_ms, model=None):
+        self.names = list(names)
+        self.mean = np.asarray(mean, dtype=float)
+        self.std = np.asarray(std, dtype=float)
+        self.hist = -np.asarray(elbo, dtype=float)
+        self.ms = ms
+        self.compile_ms = compile_ms
+        self.lower_ms = lower_ms
+        self._model = model
+
+    def sample(self, draws=1000, seed=None):
+        """`draws` from the fitted Gaussian, as an ArviZ `InferenceData` with one chain."""
+        rng = np.random.default_rng(seed)
+        n = len(self.names)
+        flat = self.mean + self.std * rng.standard_normal((draws, n))
+        fit = Fit(self.names, flat[None], np.zeros((1, 0, n)), None, self.ms, 0,
+                  self.compile_ms, self.lower_ms, self._model)
+        return fit.to_inference_data(save_warmup=False)
+
+    def __repr__(self):
+        return f"<Approximation mean-field over {len(self.names)} parameters, {self.ms:.0f} ms>"
+
+
 class Compiled:
     """A model already lowered and emitted, ready to sample as often as wanted.
 
@@ -245,6 +282,25 @@ class Compiled:
                    self.lower_ms, self._model, self.log_lik, rows)
 
 
+    async def fit(self, n=10000, method="advi", learning_rate=0.01, mc_samples=1, seed=42,
+                  callback=None, snapshot_every=0):
+        """Mean-field ADVI by tapewasm, like `pm.fit(n, method="advi")`.
+
+        Adam over the reparameterized ELBO, `mc_samples` draws per step, starting
+        at the point `compile` found. `callback(iteration, mean)` is called at each
+        snapshot, every `snapshot_every` iterations, or every 1% when not given.
+        """
+        if method != "advi":
+            raise ValueError(f"method={method!r}: only mean-field 'advi' is available, "
+                             "since tapewasm has no full-rank ADVI")
+        if callback is not None and not snapshot_every:
+            snapshot_every = max(n // 100, 1)
+        r = await _bridge.advi(self._handle, self._tw, self.init, n, mc_samples, learning_rate,
+                               seed, self.names, snapshot_every, callback)
+        return Approximation(self.names, r["mu"], r["sigma"], r["elbo"], r["ms"],
+                             self.compile_ms, self.lower_ms, self._model)
+
+
 async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True):
     """Lower `model` and emit its module.
 
@@ -275,3 +331,10 @@ async def sample(model, draws=1000, warmup=1000, seed=42, chains=1, point=None,
     compiled = await compile(model, point, tapewasm_path, log_lik=log_lik)
     return await compiled.sample(draws=draws, warmup=warmup, seed=seed, chains=chains,
                                  log_lik=log_lik)
+
+
+async def fit(model, n=10000, method="advi", point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH,
+              **kwargs):
+    """Compile `model` and fit it by mean-field ADVI, in one go; `kwargs` go to `Compiled.fit`."""
+    compiled = await compile(model, point, tapewasm_path, log_lik=False)
+    return await compiled.fit(n=n, method=method, **kwargs)
