@@ -1,0 +1,42 @@
+name: posteriordb
+
+# Every posteriordb posterior with a PyMC implementation, lowered and emitted as
+# `pymcwasm-build` does, against PyMC. Fails when one named in
+# scripts/posteriordb-passing.txt stops agreeing. About twenty minutes, so it runs
+# when what it checks moves, and weekly for new PyMC and PyTensor releases.
+on:
+  pull_request:
+    paths:
+      - "src/pymcwasm/lowering.py"
+      - "src/pymcwasm/build.py"
+      - "src/pymcwasm/_compile.mjs"
+      - "scripts/posteriordb*"
+      - "package-lock.json"
+      - ".github/workflows/posteriordb.yml"
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: stan-dev/posteriordb
+          ref: 5545a1dd07ae297c36edecbcd82aa49097b4c385
+          path: posteriordb
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm ci
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: >
+          uv run --no-project --with pymc --with scipy --with wasmtime
+          python scripts/posteriordb.py --expect scripts/posteriordb-passing.txt
+        env:
+          POSTERIORDB: posteriordb

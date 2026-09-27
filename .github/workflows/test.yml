@@ -1,0 +1,23 @@
+name: test
+
+# The lowering, the build and the linker against PyMC and PyTensor's own backend.
+# Needs npm's tapewasm on disk, which is what the emitter is.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm ci
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: uv run --no-project --with pymc --with scipy --with arviz --with wasmtime --with pytest pytest -q tests
