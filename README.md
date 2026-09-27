@@ -200,25 +200,24 @@ browser engines is a large install to pay for per push.
 
 ## How fast
 
-One model, one machine, so a shape rather than a benchmark: eight schools, non-centred,
-2 chains of 500 warmup and 500 draws run one after the other, on an Apple M3.
+`bench/` runs nine posteriordb posteriors, from 2 to 3,075 parameters, under five
+samplers, and scores each by the smallest bulk ESS per second of sampling:
+[`bench/RESULTS.md`](bench/RESULTS.md), on an Apple M3 with PyMC 6.3.2. What it shows:
 
-| where | sampler | time |
-| --- | --- | --- |
-| JupyterLite, Chromium | PyMC's NUTS, PyTensor's Python linker | 5.8 s |
-| JupyterLite, Chromium | PyMC's NUTS, `mode="WASM"` | 1.2 s |
-| JupyterLite, Chromium | `pymcwasm.sample`, nuts-rs in the module | 0.02 s, after 0.21 s compiling |
-| CPython 3.13 | PyMC's NUTS, PyTensor's default backend | 0.39 s |
-| CPython 3.13 | nutpie, nuts-rs natively | 0.027 s, after 0.4–1.2 s compiling |
+- **Under Pyodide, `mode="WASM"` is 10–100x the Python linker** PyTensor otherwise
+  falls back to there: 98 against 1 ESS/s on a 3,020-observation logistic regression.
+- **`pymcwasm.sample` in the page matches PyMC's own NUTS on CPython** up to about a
+  hundred parameters (eight schools 3,944 against 2,213 ESS/s, radon 89 parameters 345
+  against 326), and trails nutpie on CPython by 3–10x.
+- **It falls behind as the data grows.** On radon with 12,573 observations and on
+  diamonds, nutpie is 3–15x faster: the module is a tape of scalars, where nutpie
+  runs numba's vectorised loops.
+- **nuts-rs mixes where PyMC's NUTS does not.** On `irt_2pl` PyMC's NUTS reaches 3
+  effective draws, on CPython too, and its means sit 43 sd from nutpie's;
+  `pymcwasm.sample` reaches 93 and agrees with nutpie to 0.14 sd.
 
-The browser rows are one run each and include what `pm.sample` compiles; the CPython
-rows are the best of three, with PyTensor's compile cache warm. PyMC 6.3.2 and PyTensor
-3.3.2 on both sides; nutpie 0.16.11. `pm.sample` under PyMC 6 picks nutpie when it is
-installed, so the PyMC row passes `nuts_sampler="pymc"`.
-
-Under Pyodide the module is about a tenth of `pm.sample`'s time with `mode="WASM"`; the
-rest is PyMC's NUTS in Python, which is what `pymcwasm.sample` leaves out. On a model
-this small, drawing in the page and drawing with nutpie natively take about as long.
+One run each, 2 chains of 500 warmup and 500 draws; the horseshoe regression is not
+settled at that length under any sampler, and `RESULTS.md` marks such rows.
 
 ## As a PyTensor backend
 

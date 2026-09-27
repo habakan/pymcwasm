@@ -83,3 +83,16 @@ def test_build_writes_what_a_precompiled_host_reads(tmp_path, monkeypatch):
     assert len(meta["initialPoint"]) == 2 and 0 <= meta["layoutId"] < 2**32
     assert len(meta["scratchInit"]) >= 4 and meta["logLik"][0]["shape"] == [3]
     assert (tmp_path / "model.wasm").read_bytes()[:4] == b"\0asm"
+
+
+def test_a_start_where_pymc_gradient_is_nan_is_not_refused():
+    # A logit of 400 makes PyMC's own d/dz of the Bernoulli term NaN; the start is fine.
+    from pymcwasm import starting_point
+
+    with pm.Model() as m:
+        z = pm.Normal("z", 3.0, 0.1)
+        pm.Bernoulli("y", logit_p=z * 130, observed=[1, 0])
+    grad = np.asarray(m.compile_dlogp()(m.initial_point()), dtype=float)
+    if np.all(np.isfinite(grad)):
+        pytest.skip("this PyMC's gradient is finite here")
+    starting_point(m)
