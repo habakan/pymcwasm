@@ -505,6 +505,20 @@ def _index(x):
     return x[1] if isinstance(x[1], slice) or x[1] is None else np.asarray(x[1]).astype(int)
 
 
+def _advanced_key(op, index_ins):
+    # PyTensor 3 keeps slices in `idx_list`, whose integers are positions among the index
+    # inputs (`x[1:, i]` is `(slice(0, None), 1)`); older ones pass everything as inputs.
+    idx_list = getattr(op, "idx_list", None)
+    if idx_list is None:
+        return tuple(_index(x) for x in index_ins)
+
+    def bound(k):
+        return None if k is None else int(np.asarray(index_ins[k][1]).item())
+
+    return tuple(slice(bound(e.start), bound(e.stop), bound(e.step)) if isinstance(e, slice)
+                 else _index(index_ins[e]) for e in idx_list)
+
+
 @lowers("All", "Any")
 def _all_any(op, node, ins, cx):
     a = ins[0]
@@ -548,7 +562,7 @@ def _subtensor(op, node, ins, cx):
     if op_name(op) == "Subtensor":
         keys = static_index(op, node.inputs, cx.resolve_scalar)
     else:
-        keys = tuple(_index(x) for x in ins[1:])
+        keys = _advanced_key(op, ins[1:])
     return (a[0], np.asarray(a[1])[keys if len(keys) > 1 else keys[0]])
 
 
@@ -629,7 +643,7 @@ def _inc_subtensor(op, node, ins, cx):
         if len(key) == 1:
             key = key[0]
     else:
-        keys = tuple(_index(x) for x in ins[2:])
+        keys = _advanced_key(op, ins[2:])
         key = keys if len(keys) > 1 else keys[0]
     arr = np.asarray(base[1])
     setting = getattr(op, "set_instead_of_inc", True)
@@ -667,6 +681,27 @@ def _alloc(op, node, ins, cx):
     shape = tuple(int(np.asarray(x[1]).item()) for x in ins[1:])
     arr = np.broadcast_to(np.asarray(a[1]), shape)
     return (a[0], np.array(arr, dtype=object) if is_tape(a) else np.array(arr, dtype=float))
+
+
+@lowers("LogAddExp")
+def _logaddexp(op, node, ins, cx):
+    # max(a, b) + log(1 + exp(-|a - b|)), written as softplus is, so neither side overflows.
+    low, (a, b) = cx.low, ins
+    gap = low.unary("Abs", low.binary("Sub", a, b))
+    top = low.binary("Mul", low.binary("Add", low.binary("Add", a, b), gap), ("c", np.array(0.5)))
+    tail = low.unary("Exp", low.unary("Neg", gap))
+    return low.binary("Add", top, low.unary("Log", low.binary("Add", tail, ("c", np.array(1.0)))))
+
+
+@lowers("LogSumExp")
+def _logsumexp(op, node, ins, cx):
+    # c + log(sum(exp(x - c))) has the same value and gradient for any constant c, so the
+    # shift PyTensor takes as a max is the trace point's max here, folded.
+    x, axis = ins[0], op.axis
+    vals = np.vectorize(lambda i: cx.low.w.values[int(i)], otypes=[float])(x[1]) if is_tape(x) else np.asarray(x[1])
+    c = np.max(vals, axis=axis, keepdims=True)
+    total = cx.low.reduce_sum(cx.low.unary("Exp", cx.low.binary("Sub", x, ("c", c))), axis)
+    return cx.low.binary("Add", cx.low.unary("Log", total), ("c", np.squeeze(c, axis=axis)))
 
 
 @lowers("Shape", "Shape_i")

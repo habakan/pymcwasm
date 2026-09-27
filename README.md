@@ -185,17 +185,18 @@ moves with nutpie and not only with this code.
 
 **Beyond these seven**, `scripts/posteriordb.py` lowers every
 [posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
-implementation and checks its gradient the same way. 77 of 83 agree with PyMC to
-1e-13 or better, all 35 that have a reference posterior among them. Of the other
-six, four are refused (`AllocEmpty`, `BetaInc`, `Maximum`, a discrete parameter),
-`prostate`'s 2 MB module panics the interpreter the check runs it in, and `lsat`'s
-gradient is NaN. 36 of the 77 — radon, kidiq and others whose data repeats rows —
-need tapewasm 0.3.4.
+implementation, emits it with npm's tapewasm as `pymcwasm-build` does, and checks its
+density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.4, 79 of
+83 agree to 1e-8 or better, all 35 that have a reference posterior among them; the
+other four are refused (`AllocEmpty`, `BetaInc`, `Maximum`, a discrete parameter). On
+`irt_2pl` and `lsat` PyMC's own gradient is NaN in some terms where its density is
+finite, and those terms are checked against a central difference of the density instead.
+38 of the 79 — radon, kidiq and others whose data repeats rows — are refused by 0.3.3.
 
-All three are run by hand — `python src/pymcwasm/lowering.py`, `scripts/posteriordb.py` and `npm test` — when
-the emitter or the lowering moves, rather than on every commit. What they check
-changes with those two and with nothing else here, and three browser engines is
-a large install to pay for per push.
+`pytest tests` runs on every push. The posteriordb check runs in CI when the lowering or
+the emitter moves, and weekly, and fails if a posterior in
+`scripts/posteriordb-passing.txt` stops agreeing. `npm test` is run by hand: three
+browser engines is a large install to pay for per push.
 
 Not a speed claim, in either direction.
 
