@@ -53,7 +53,9 @@ def starting_point(model, seed=0, tries=50):
     point = model.initial_point()
     rng = np.random.default_rng(seed)
     for _ in range(tries):
-        if np.all(np.abs(np.asarray(dlogp(point), dtype=float)) > 1e-12):
+        # Only an exact zero is refused. PyMC's own gradient can be NaN where the module's
+        # is finite (a saturated sigmoid in irt_2pl), and that says nothing about the start.
+        if not np.any(np.abs(np.asarray(dlogp(point), dtype=float)) <= 1e-12):
             return point
         point = {
             k: np.asarray(v, dtype=float) + rng.uniform(-2, 2, np.shape(v))
