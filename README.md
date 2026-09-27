@@ -216,8 +216,12 @@ its Python linker. There the page's tapewasm emits the module and the browser ru
 it, after one `await pymcwasm.linker.load()`; PyMC's own NUTS then samples 3.8–6.7x
 faster on three of the models here (`npm run test:linker-pyodide`, Chromium, a
 worker, 300 draws). `examples/jupyterlite/` is the same in a real JupyterLite
-notebook — PyMC 6.3, Python 3.14, 4.8x on eight schools — built by
-`examples/jupyterlite/build.sh` and run cell by cell by `node examples/jupyterlite/check.mjs`.
+notebook — PyMC 6.3, Python 3.14 — built by `examples/jupyterlite/build.sh` and run
+cell by cell by `node examples/jupyterlite/check.mjs`. On eight schools, 2 chains of
+1,000: PyMC's NUTS takes 5.8 s on the Python linker and 1.2 s with `mode="WASM"`;
+`pymcwasm.sample`, with nuts-rs in the module as well, compiles in 0.21 s and draws in
+0.02 s. Timing PyMC's NUTS under Pyodide, the module is about a tenth of the time
+and PyMC's own Python the rest, which is what drawing inside the module removes.
 
 The tape has no branch, so a comparison on an input is taken the way it was traced;
 its operands come back beside the outputs, and a call that goes the other way traces
