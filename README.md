@@ -198,7 +198,27 @@ the emitter moves, and weekly, and fails if a posterior in
 `scripts/posteriordb-passing.txt` stops agreeing. `npm test` is run by hand: three
 browser engines is a large install to pay for per push.
 
-Not a speed claim, in either direction.
+## How fast
+
+One model, one machine, so a shape rather than a benchmark: eight schools, non-centred,
+2 chains of 500 warmup and 500 draws run one after the other, on an Apple M3.
+
+| where | sampler | time |
+| --- | --- | --- |
+| JupyterLite, Chromium | PyMC's NUTS, PyTensor's Python linker | 5.8 s |
+| JupyterLite, Chromium | PyMC's NUTS, `mode="WASM"` | 1.2 s |
+| JupyterLite, Chromium | `pymcwasm.sample`, nuts-rs in the module | 0.02 s, after 0.21 s compiling |
+| CPython 3.13 | PyMC's NUTS, PyTensor's default backend | 0.39 s |
+| CPython 3.13 | nutpie, nuts-rs natively | 0.027 s, after 0.4–1.2 s compiling |
+
+The browser rows are one run each and include what `pm.sample` compiles; the CPython
+rows are the best of three, with PyTensor's compile cache warm. PyMC 6.3.2 and PyTensor
+3.3.2 on both sides; nutpie 0.16.11. `pm.sample` under PyMC 6 picks nutpie when it is
+installed, so the PyMC row passes `nuts_sampler="pymc"`.
+
+Under Pyodide the module is about a tenth of `pm.sample`'s time with `mode="WASM"`; the
+rest is PyMC's NUTS in Python, which is what `pymcwasm.sample` leaves out. On a model
+this small, drawing in the page and drawing with nutpie natively take about as long.
 
 ## As a PyTensor backend
 
@@ -216,8 +236,12 @@ its Python linker. There the page's tapewasm emits the module and the browser ru
 it, after one `await pymcwasm.linker.load()`; PyMC's own NUTS then samples 3.8–6.7x
 faster on three of the models here (`npm run test:linker-pyodide`, Chromium, a
 worker, 300 draws). `examples/jupyterlite/` is the same in a real JupyterLite
-notebook — PyMC 6.3, Python 3.14, 4.8x on eight schools — built by
-`examples/jupyterlite/build.sh` and run cell by cell by `node examples/jupyterlite/check.mjs`.
+notebook — PyMC 6.3, Python 3.14 — built by `examples/jupyterlite/build.sh` and run
+cell by cell by `node examples/jupyterlite/check.mjs`. On eight schools, 2 chains of
+1,000: PyMC's NUTS takes 5.8 s on the Python linker and 1.2 s with `mode="WASM"`;
+`pymcwasm.sample`, with nuts-rs in the module as well, compiles in 0.21 s and draws in
+0.02 s. Timing PyMC's NUTS under Pyodide, the module is about a tenth of the time
+and PyMC's own Python the rest, which is what drawing inside the module removes.
 
 The tape has no branch, so a comparison on an input is taken the way it was traced;
 its operands come back beside the outputs, and a call that goes the other way traces
