@@ -38,6 +38,10 @@ jobs:
 
       - run: npm ci
 
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: build the JupyterLite notebook
+        run: bash examples/jupyterlite/build.sh
+
       # `serve.mjs` maps two paths that do not exist on disk. A static host has
       # no such mapping, so they become real directories here.
       - name: lay the site out the way serve.mjs serves it
@@ -48,6 +52,7 @@ jobs:
           mkdir -p site/vendor && cp -r node_modules/tapewasm/* site/vendor/
           mkdir -p site/posteriorwasm && cp -r node_modules/posteriorwasm/* site/posteriorwasm/
           cp index.html site/
+          rm -rf site/examples/jupyterlite && cp -r examples/jupyterlite/_output site/lite
 
       - uses: actions/upload-pages-artifact@v4
         with:

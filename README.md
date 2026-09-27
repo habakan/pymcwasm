@@ -214,7 +214,9 @@ Under Pyodide — JupyterLite, marimo — PyTensor has no C compiler and falls b
 its Python linker. There the page's tapewasm emits the module and the browser runs
 it, after one `await pymcwasm.linker.load()`; PyMC's own NUTS then samples 3.8–6.7x
 faster on three of the models here (`npm run test:linker-pyodide`, Chromium, a
-worker, 300 draws).
+worker, 300 draws). `examples/jupyterlite/` is the same in a real JupyterLite
+notebook — PyMC 6.3, Python 3.14, 4.8x on eight schools — built by
+`examples/jupyterlite/build.sh` and run cell by cell by `node examples/jupyterlite/check.mjs`.
 
 The tape has no branch, so a comparison on an input is taken the way it was traced;
 its operands come back beside the outputs, and a call that goes the other way traces
