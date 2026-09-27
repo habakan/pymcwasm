@@ -72,6 +72,30 @@ threshold ArviZ warns at are flagged, since that is the one number saying the
 estimate itself is unreliable. A model with nothing observed says so and the
 other diagnostics carry on.
 
+### Or fit it by variational inference
+
+The same module also runs tapewasm's mean-field ADVI, for models NUTS is slow on
+in a page:
+
+```python
+approx = await pymcwasm.fit(model, n=10000)   # or compiled.fit(...)
+approx.mean, approx.std   # per unconstrained scalar, named in approx.names
+approx.hist               # the loss, the negative ELBO, per iteration, as PyMC's
+idata = approx.sample(1000)
+```
+
+On the seven models here, with the same optimizer (Adam at 0.01) and 40,000
+iterations, its means sit closer to PyMC's own ADVI than PyMC's three seeds sit to
+each other, and within 0.06 posterior sd of nutpie's except on eight schools, where
+mean-field ADVI is known to shrink `tau` (PyMC's lands 0.84 sd off too).
+`scripts/advi_compare.py` runs that comparison. At the default 10,000 iterations
+`matrix_regression` and `lkj_mvnormal` have not converged yet, as with PyMC's
+default, so read `hist` before trusting a fit. Full-rank ADVI is not available.
+
+The network in `examples/live-decoder/` — 4,344 parameters — written as a PyMC
+model compiles in 3.3 s under Pyodide and fits in 13 s to the same reconstruction
+error as the hand-written tape there (`examples/pyodide/advi-check.mjs`).
+
 ## Compile it beforehand and ship the module
 
 Nothing Python-shaped reaches the browser. A build step turns a model into a
