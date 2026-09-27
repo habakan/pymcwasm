@@ -11,3 +11,6 @@ examples/jupyterlite/_output
 examples/jupyterlite/.jupyterlite.doit.db
 examples/jupyterlite/files/tapewasm
 examples/jupyterlite/files/*.whl
+
+# The benchmark reads posteriordb models copied here by bench/prepare.py.
+bench/models
