@@ -128,7 +128,7 @@ leaves out the per-observation terms. Reading an artifact needs nothing.
 
 `examples/live-decoder/` is one built this way that is not sampled but fitted: a
 4,344-parameter decoder of MNIST digits written in PyMC (`model.py`), built to a
-308 KB module, and trained in the page by tapewasm's mean-field ADVI in 9–15 s
+308 KB module, and loaded and trained in the page by tapewasm's mean-field ADVI in 14–22 s
 (`node examples/live-decoder/check.mjs`, Chromium, Firefox and WebKit).
 
 ### What a page does with one, in full
