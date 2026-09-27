@@ -65,6 +65,11 @@ def test_a_branch_taken_the_other_way_traces_again():
         np.testing.assert_allclose(f(x)[0], np.where(x > 0, x, -2 * x))
 
 
+def test_overflow_and_domain_errors_are_inf_and_nan_as_pytensor_gives():
+    # math.exp raises past 709 and (-8) ** 0.5 is complex in Python; the host imports must not.
+    compare_wasm_and_py([X], [pt.exp(X * 1000), pt.log(X), X ** 0.5], [np.array([1.0, -1.0])])
+
+
 def test_an_integer_input_is_refused():
     i = pt.lvector("i")
     with pytest.raises(NotImplementedError, match="only float inputs"):
