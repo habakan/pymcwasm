@@ -4,13 +4,16 @@
     f = pytensor.function([x], pt.exp(x).sum(), mode="WASM")
 
 Each call with new input shapes traces the graph at those inputs, emits a module with
-npm's `tapewasm` (Node, as `pymcwasm-build` does) and runs it under `wasmtime`. What it
+npm's `tapewasm` (Node, as `pymcwasm-build` does) and runs it under `wasmtime`. Under
+Pyodide, where PyTensor has no C compiler to use, the page's tapewasm emits it and the
+browser runs it, after one `await pymcwasm.linker.load()`. What it
 computes is the forward pass alone. The tape has no branch, so a comparison on an input
 is taken as it was traced and checked on every call.
 """
 
 import math
 import os
+import sys
 import tempfile
 
 import numpy as np
@@ -81,6 +84,50 @@ def _pow(a, b):
         return math.nan
 
 
+_js = {}
+
+
+async def load(tapewasm_path=None):
+    """Under Pyodide: load tapewasm's JS module, so a call can compile synchronously."""
+    from pyodide.code import run_js
+
+    from . import _bridge
+
+    tw = await _bridge.load(tapewasm_path or _bridge.DEFAULT_TAPEWASM_PATH)
+    # A PyTensor call is synchronous, so the module is compiled and instantiated that way.
+    _js["compile"] = run_js("""
+    (tw, math) => (tape) => {
+      const built = tw.compileTape(tape, "auto");
+      const n = built.nParams, nOut = Math.max(built.nOutputs, 1);
+      const scratch = Float64Array.from(built.scratchInit);
+      const S = 8 * (n + nOut), bytes = S + scratch.byteLength;
+      const memory = new WebAssembly.Memory({ initial: Math.ceil(bytes / 65536) + 1 });
+      const { exports } = new WebAssembly.Instance(new WebAssembly.Module(built.wasm),
+        { tapewasm: { memory }, Math: math });
+      return (x) => {
+        const f = new Float64Array(memory.buffer);
+        f.set(x, 0);
+        f.set(scratch, S / 8);
+        exports.evaluate(0, 8 * n, n, S);
+        return new Float64Array(memory.buffer, 8 * n, built.nOutputs).slice();
+      };
+    }""")(tw, run_js(_bridge._MATH_JS))
+
+
+class JsModule:
+    """One emitted module, compiled and instantiated by the browser."""
+
+    def __init__(self, tape):
+        if "compile" not in _js:
+            raise RuntimeError("under Pyodide, `await pymcwasm.linker.load()` before the first call")
+        self.fn = _js["compile"](tape)
+
+    def evaluate(self, x):
+        from pyodide.ffi import to_js
+
+        return np.asarray(self.fn(to_js(np.asarray(x, dtype=float))).to_py(), dtype=float)
+
+
 class Traced:
     """The graph's function: traced and compiled once per input shape and branch taken.
 
@@ -113,10 +160,13 @@ class Traced:
             n_params = sum(np.size(x) for x in inputs)
             tape = "\n".join([f"n_params {n_params}", *w.lines, f"root {named[0]}",
                               "outputs " + " ".join(map(str, named))]) + "\n"
-            with tempfile.TemporaryDirectory() as d:
-                path = os.path.join(d, "graph.wasm")
-                built = compile_tape(tape, path)
-                module = Module(path, n_params, built["scratchInit"], built["nOutputs"])
+            if sys.platform == "emscripten":
+                module = JsModule(tape)
+            else:
+                with tempfile.TemporaryDirectory() as d:
+                    path = os.path.join(d, "graph.wasm")
+                    built = compile_tape(tape, path)
+                    module = Module(path, n_params, built["scratchInit"], built["nOutputs"])
         return module, plan, checks
 
     def __call__(self, *inputs):

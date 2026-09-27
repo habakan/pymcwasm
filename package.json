@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node serve.mjs",
     "test": "node examples/browser/check.mjs",
-    "test:pyodide": "node examples/pyodide/check.mjs"
+    "test:pyodide": "node examples/pyodide/check.mjs",
+    "test:linker-pyodide": "node examples/pyodide/linker-check.mjs"
   },
   "dependencies": {
     "posteriorwasm": "github:habakan/posteriorwasm#6951eb5a793f10438732351680089a98ac42d88a",

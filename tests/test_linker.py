@@ -47,7 +47,8 @@ x4, a34 = RNG.normal(size=4), RNG.normal(size=(3, 4))
     ([X], lambda: [pt.softplus(X * 50), pt.sigmoid(-X * 50)]),
     ([A, X], lambda: [A @ X, A.T.sum(axis=0)]),
     ([A], lambda: [A.dimshuffle(1, "x", 0)[:, 0, 1:]]),
-], ids=["exp-sum", "two-outputs", "softplus-far", "matvec", "dimshuffle"])
+    ([A], lambda: [pt.concatenate([A, 2 * A], axis=1)]),
+], ids=["exp-sum", "two-outputs", "softplus-far", "matvec", "dimshuffle", "join-axis-1"])
 def test_graphs_agree(ins, outputs):
     compare_wasm_and_py(ins, outputs(), [a34 if v is A else x4 for v in ins])
 
