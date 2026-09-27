@@ -33,28 +33,34 @@ except ImportError:
 # Every instruction's value, so a lowered subgraph can be compared against what
 # PyTensor computes for the same variable. Only used by `--verify`.
 def _apply(op, args, vals):
-    import math
     from scipy.special import gammaln
     from scipy.stats import norm
 
-    a = lambda k: vals[int(args[k])]
-    c = lambda k: float(args[k])
+    # float64 under errstate, so a trace point where log(-1) or 1/0 happens gets the nan or
+    # inf the module and PyTensor give there, rather than an exception.
+    a = lambda k: np.float64(vals[int(args[k])])
+    c = lambda k: np.float64(args[k])
+    with np.errstate(all="ignore"):
+        return float(_OPS(a, c, args, gammaln, norm)[op]())
+
+
+def _OPS(a, c, args, gammaln, norm):
     return {
         "new_var": lambda: c(0),
         "add": lambda: a(0) + a(1), "sub": lambda: a(0) - a(1),
         "mul": lambda: a(0) * a(1), "div": lambda: a(0) / a(1),
-        "neg": lambda: -a(0), "exp": lambda: math.exp(a(0)),
-        "log": lambda: math.log(a(0)), "sin": lambda: math.sin(a(0)),
-        "cos": lambda: math.cos(a(0)), "sqrt": lambda: math.sqrt(a(0)),
+        "neg": lambda: -a(0), "exp": lambda: np.exp(a(0)),
+        "log": lambda: np.log(a(0)), "sin": lambda: np.sin(a(0)),
+        "cos": lambda: np.cos(a(0)), "sqrt": lambda: np.sqrt(a(0)),
         "abs": lambda: abs(a(0)), "lgamma": lambda: float(gammaln(a(0))),
-        "phi": lambda: float(norm.cdf(a(0))), "pow": lambda: a(0) ** c(1),
+        "phi": lambda: float(norm.cdf(a(0))), "pow": lambda: np.power(a(0), c(1)),
         "add_c": lambda: a(0) + c(1), "sub_c": lambda: a(0) - c(1),
         "rsub_c": lambda: c(1) - a(0), "mul_c": lambda: a(0) * c(1),
         "div_c": lambda: a(0) / c(1), "rdiv_c": lambda: c(1) / a(0),
         # `dot_c <len> <node> <coeff> ...` and `sum_run <seed> <len> <node> ...`.
         "dot_c": lambda: sum(a(1 + 2 * i) * c(2 + 2 * i) for i in range(int(args[0]))),
         "sum_run": lambda: a(0) + sum(a(2 + i) for i in range(int(args[1]))),
-    }[op]()
+    }
 
 
 def _run(nodes):
