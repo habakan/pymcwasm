@@ -11,7 +11,6 @@ computes is the forward pass alone. The tape has no branch, so a comparison on a
 is taken as it was traced and checked on every call.
 """
 
-import math
 import os
 import sys
 import tempfile
@@ -44,10 +43,11 @@ class Module:
         self.memory = wasmtime.Memory(self.store, wasmtime.MemoryType(wasmtime.Limits(pages, None)))
 
         f64 = wasmtime.ValType.f64()
-        unary = {"exp": math.exp, "log": _log, "sin": math.sin, "cos": math.cos, "tan": math.tan,
-                 "asin": math.asin, "acos": math.acos, "atan": math.atan,
-                 "lgamma": lambda x: float(gammaln(x)), "digamma": lambda x: float(digamma(x)),
-                 "phi": lambda x: float(norm.cdf(x))}
+        # numpy's, not math's: like JS's Math, they give inf and nan where math raises.
+        unary = {name: _quiet(getattr(np, name)) for name in
+                 ("exp", "log", "sin", "cos", "tan", "arcsin", "arccos", "arctan")}
+        unary.update(asin=unary.pop("arcsin"), acos=unary.pop("arccos"), atan=unary.pop("arctan"),
+                     lgamma=_quiet(gammaln), digamma=_quiet(digamma), phi=_quiet(norm.cdf))
         imports = []
         for imp in module.imports:
             if imp.name == "memory":
@@ -71,17 +71,14 @@ class Module:
         return self._call("log_prob_grad", x, self.grads, self.n)
 
 
-def _log(x):
-    return math.log(x) if x > 0 else (-math.inf if x == 0 else math.nan)
+def _quiet(f):
+    def call(*args):
+        with np.errstate(all="ignore"):
+            return float(f(*args))
+    return call
 
 
-def _pow(a, b):
-    try:
-        return float(a ** b)
-    except (OverflowError, ZeroDivisionError):
-        return math.inf
-    except ValueError:
-        return math.nan
+_pow = _quiet(np.power)
 
 
 _js = {}
