@@ -82,16 +82,16 @@
 <header>
   <h1>A tiny decoder, trained right here</h1>
   <p class="desc">
-    Nothing here was precompiled. <b>compile</b> writes the tape by hand
-    (<code>z &rarr; Dense(4&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>)
-    and emits a wasm module through tapewasm's <code>compileTape()</code>;
-    <b>train</b> fits it with <code>advi()</code>, in a worker. 32 MNIST digits
-    (posteriordb's subset), downsampled to 14&times;14 so a fit takes seconds.
+    The model is ten lines of PyMC (<a href="https://github.com/habakan/pymcwasm/blob/main/examples/live-decoder/model.py"><code>model.py</code></a>:
+    <code>z &rarr; Dense(4&rarr;20) &rarr; sigmoid &rarr; Dense(20&rarr;196) &rarr; sigmoid</code>),
+    built ahead of time by <code>pymcwasm-build</code> into a wasm module, so no Python loads here.
+    <b>load</b> fetches that module; <b>train</b> fits it with tapewasm's <code>advi()</code>, in a
+    worker. 32 MNIST digits (posteriordb's subset), downsampled to 14&times;14 so a fit takes seconds.
   </p>
   <div class="bar">
-    <button id="compile">compile</button>
+    <button id="load">load</button>
     <button id="train" disabled>train</button>
-    <span id="status">idle — compile the model first</span>
+    <span id="status">idle — load the model first</span>
   </div>
 </header>
 
@@ -148,7 +148,7 @@ xᵢⱼ ~ N(μᵢⱼ, 0.05²)</pre>
     <p class="dim">Shaded: observed pixel. Double circle: deterministic.
     Not a VAE &mdash; there is no encoder. Each <code>zᵢ</code> is its own
     parameter, fit jointly with the weights by mean-field ADVI.</p>
-    <p id="compileInfo" class="dim">Not compiled yet.</p>
+    <p id="loadInfo" class="dim">Not loaded yet.</p>
   </div>
 
   <div class="panel explorer" id="explorer">
@@ -368,9 +368,9 @@ function paintRecon(mu) {
   }
 }
 
-async function compile() {
-  $("compile").disabled = true;
-  $("status").textContent = "writing the tape and compiling it…";
+async function load() {
+  $("load").disabled = true;
+  $("status").textContent = "fetching the module pymcwasm-build wrote…";
   try {
     const raw = await (await fetch("./digits.json")).json();
     ORIGINAL_PIXELS = raw.pixels.map(downsample14);
@@ -394,17 +394,17 @@ async function compile() {
       reconCanvases.push(reconC);
     }
 
-    const c = await ask({ type: "compile", pixels: ORIGINAL_PIXELS, gridSize: 14 });
+    const c = await ask({ type: "load" });
     SHAPE = c.shape;
-    $("compileInfo").innerHTML =
-      `compiled in <b>${c.compileMs.toFixed(0)}ms</b> &mdash; ${c.nParams.toLocaleString()} params, ` +
-      `${c.tapeLines.toLocaleString()} tape lines, ${c.moduleBytes.toLocaleString()} byte module.`;
-    $("compile").textContent = "compiled";
-    $("status").textContent = "compiled — ready to train";
+    $("loadInfo").innerHTML =
+      `loaded in <b>${c.loadMs.toFixed(0)}ms</b> &mdash; ${c.nParams.toLocaleString()} params, ` +
+      `${c.moduleBytes.toLocaleString()} byte module, built from model.py by pymcwasm-build.`;
+    $("load").textContent = "loaded";
+    $("status").textContent = "loaded — ready to train";
     $("train").disabled = false;
   } catch (e) {
     $("status").textContent = "error: " + (e?.message ?? String(e));
-    $("compile").disabled = false;
+    $("load").disabled = false;
     console.error(e);
   }
 }
@@ -449,7 +449,7 @@ async function train() {
   }
 }
 
-$("compile").addEventListener("click", compile);
+$("load").addEventListener("click", load);
 $("train").addEventListener("click", train);
 window.done = true;
 </script>
