@@ -27,6 +27,11 @@ def model():
     return m
 
 
+def groups(idata):
+    # ArviZ 1 returns a DataTree, whose groups are its children; ArviZ 0.x an InferenceData.
+    return list(idata.children) if hasattr(idata, "children") else idata.groups()
+
+
 def fit(m, chains=2, warmup=3, draws=5, stats=True):
     rng = np.random.default_rng(0)
     names = param_names(m)  # mu[0], mu[1], sigma_log__
@@ -74,7 +79,7 @@ def test_named_dims_and_coords_carry_over():
 
 def test_without_stats_there_is_no_sample_stats_group():
     f, _ = fit(model(), stats=False)
-    assert "sample_stats" not in f.to_inference_data().groups()
+    assert "sample_stats" not in groups(f.to_inference_data())
 
 
 def test_pooled_draws_keep_their_old_shape():
@@ -124,7 +129,7 @@ def test_the_log_likelihood_group_is_shaped_by_the_observed_variable():
 
 def test_without_reported_terms_there_is_no_log_likelihood_group():
     f, _ = fit(model())
-    assert "log_likelihood" not in f.to_inference_data().groups()
+    assert "log_likelihood" not in groups(f.to_inference_data())
 
 
 def test_sample_asks_the_module_for_each_draws_terms(monkeypatch):
@@ -170,4 +175,4 @@ def test_an_older_tapewasm_leaves_the_group_out(monkeypatch):
                  1.0, m, [{"name": "y", "shape": [2]}])
     f = asyncio.run(c.sample(draws=3, warmup=1))
     assert f.log_lik_draws is None
-    assert "log_likelihood" not in f.to_inference_data().groups()
+    assert "log_likelihood" not in groups(f.to_inference_data())

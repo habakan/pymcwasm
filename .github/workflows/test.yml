@@ -12,7 +12,13 @@ permissions:
 
 jobs:
   pytest:
+    # PyMC 5 resolves on Python 3.11 and PyMC 6 on 3.13; their graphs differ (Join, LogSumExp).
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

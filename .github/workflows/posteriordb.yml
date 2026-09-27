@@ -23,6 +23,8 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"   # PyMC 6, what scripts/posteriordb-passing.txt was made with
     steps:
       - uses: actions/checkout@v5
       - uses: actions/checkout@v5
