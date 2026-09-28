@@ -70,10 +70,26 @@ def test_overflow_and_domain_errors_are_inf_and_nan_as_pytensor_gives():
     compare_wasm_and_py([X], [pt.exp(X * 1000), pt.log(X), X ** 0.5], [np.array([1.0, -1.0])])
 
 
-def test_an_integer_input_is_refused():
+def test_an_integer_input_folds_in_and_a_new_value_traces_again():
     i = pt.lvector("i")
-    with pytest.raises(NotImplementedError, match="only float inputs"):
-        pytensor.function([i], [i * 2], mode="WASM")(np.array([1, 2]))
+    f = pytensor.function([X, i], [X[i] * 2, i + 1], mode="WASM")
+    x = np.array([1.0, 2.0, 3.0])
+    for idx in (np.array([2, 0]), np.array([1, 1])):
+        np.testing.assert_allclose(f(x, idx)[0], x[idx] * 2)
+        np.testing.assert_array_equal(f(x, idx)[1], idx + 1)
+
+
+def test_pymc_with_an_integer_index_in_data_agrees():
+    import pymc as pm
+
+    g = np.array([0, 1, 1, 2, 0])
+    with pm.Model() as m:
+        b = pm.Normal("b", 0, 1, shape=3)
+        idx = pm.Data("g", g)
+        pm.Normal("y", b[idx], 1, observed=np.arange(5.0))
+    point = jitter(m.initial_point(), np.random.default_rng(3), 0.5)
+    for compile_ in (m.compile_logp, m.compile_dlogp):
+        np.testing.assert_allclose(compile_(mode="WASM")(point), compile_()(point), rtol=1e-12)
 
 
 @pytest.mark.parametrize("name", list(MODELS))

@@ -8,7 +8,8 @@ npm's `tapewasm` (Node, as `pymcwasm-build` does) and runs it under `wasmtime`. 
 Pyodide, where PyTensor has no C compiler to use, the page's tapewasm emits it and the
 browser runs it, after one `await pymcwasm.linker.load()`. What it
 computes is the forward pass alone. The tape has no branch, so a comparison on an input
-is taken as it was traced and checked on every call.
+is taken as it was traced and checked on every call. An integer input, such as a group
+index, is folded in as a constant, and a call with other values traces again.
 """
 
 import os
@@ -17,7 +18,9 @@ import tempfile
 
 import numpy as np
 from pytensor.compile.mode import Mode, predefined_linkers, predefined_modes, register_linker, register_mode
+from pytensor.graph.replace import graph_replace
 from pytensor.graph.rewriting.db import RewriteDatabaseQuery
+from pytensor.tensor import constant
 from pytensor.link.basic import JITLinker
 
 from .build import compile_tape
@@ -137,10 +140,12 @@ class Traced:
         self.fgraph = fgraph
         self.cache = {}
 
-    def compile(self, inputs):
+    def compile(self, leaves, inputs):
         fg = self.fgraph
+        fixed = {v: constant(x, dtype=v.type.dtype) for v, x in zip(fg.inputs, inputs) if not _is_float(x)}
+        outputs = graph_replace(fg.outputs, fixed, strict=False) if fixed else fg.outputs
         guards = []
-        w, outs = lower_graph(fg.inputs, fg.outputs, inputs, guards=guards)
+        w, outs = lower_graph([v for v in fg.inputs if v not in fixed], outputs, leaves, guards=guards)
         named = []
 
         def name(kind, vals):
@@ -154,7 +159,7 @@ class Traced:
         checks = [(op, [name(*x) for x in ins], r) for op, ins, r in guards]
         module = None
         if named:
-            n_params = sum(np.size(x) for x in inputs)
+            n_params = sum(np.size(x) for x in leaves)
             tape = "\n".join([f"n_params {n_params}", *w.lines, f"root {named[0]}",
                               "outputs " + " ".join(map(str, named))]) + "\n"
             if sys.platform == "emscripten":
@@ -167,20 +172,23 @@ class Traced:
         return module, plan, checks
 
     def __call__(self, *inputs):
-        for var, x in zip(self.fgraph.inputs, inputs):
-            if not np.issubdtype(np.asarray(x).dtype, np.floating):
-                raise NotImplementedError(f"input {var} is {np.asarray(x).dtype}: only float inputs become tape leaves")
-        x = np.concatenate([np.ravel(v) for v in inputs]) if inputs else np.zeros(0)
-        variants = self.cache.setdefault(tuple(np.shape(v) for v in inputs), [])
+        leaves = [v for v in inputs if _is_float(v)]
+        x = np.concatenate([np.ravel(v) for v in leaves]) if leaves else np.zeros(0)
+        key = tuple((np.shape(v), None if _is_float(v) else np.asarray(v).tobytes()) for v in inputs)
+        variants = self.cache.setdefault(key, [])
         for module, plan, checks in variants:
             flat = module.evaluate(x) if module else None
             if all(np.array_equal(compare(op, [_value(p, flat) for p in ins]), r) for op, ins, r in checks):
                 break
         else:
-            module, plan, checks = self.compile(inputs)
+            module, plan, checks = self.compile(leaves, inputs)
             variants.append((module, plan, checks))
             flat = module.evaluate(x) if module else None
         return [_value(p, flat).astype(var.type.dtype) for var, p in zip(self.fgraph.outputs, plan)]
+
+
+def _is_float(x):
+    return np.issubdtype(np.asarray(x).dtype, np.floating)
 
 
 def _value(p, flat):

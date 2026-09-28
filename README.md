@@ -269,12 +269,16 @@ cell by cell by `node examples/jupyterlite/check.mjs`. On eight schools, 2 chain
 1,000: PyMC's NUTS takes 5.8 s on the Python linker and 1.2 s with `mode="WASM"`;
 `pymcwasm.sample`, with nuts-rs in the module as well, compiles in 0.21 s and draws in
 0.02 s. Timing PyMC's NUTS under Pyodide, the module is about a tenth of the time
-and PyMC's own Python the rest, which is what drawing inside the module removes.
+and PyMC's own Python the rest, which is what drawing inside the module removes. `examples/marimo/`
+is marimo's Simpson's paradox notebook with `mode="WASM"` added to its three
+`pm.sample` calls, exported by `marimo export html-wasm` and run by
+`node examples/marimo/check.mjs`: 2, 6 and 23 s in the page against 8, 27 and 158 s on
+the Python linker.
 
 The tape has no branch, so a comparison on an input is taken the way it was traced;
 its operands come back beside the outputs, and a call that goes the other way traces
-again. Input shapes are fixed per trace the same way, and only float inputs become
-tape leaves. `tests/test_linker.py` holds it to PyTensor's own backend, graph by
+again. Input shapes are fixed per trace the same way, and an integer input, such as a
+group index, is folded in as a constant and traces again when its values change. `tests/test_linker.py` holds it to PyTensor's own backend, graph by
 graph and on the seven models' logp and gradient.
 
 ## How it works

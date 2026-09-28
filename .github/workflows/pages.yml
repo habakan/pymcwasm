@@ -54,6 +54,9 @@ jobs:
           cp index.html site/
           rm -rf site/examples/jupyterlite && cp -r examples/jupyterlite/_output site/lite
 
+      - name: export the marimo notebook
+        run: uvx marimo export html-wasm examples/marimo/simpsons-paradox.py -o site/marimo --mode run --show-code
+
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site

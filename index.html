@@ -17,13 +17,19 @@
 <h1>pymcwasm</h1>
 <p>
   A PyMC model's log density compiled to WebAssembly and sampled by nuts-rs, in
-  the page. Two ways in.
+  the page. Three ways in.
 </p>
 
 <a class="card" href="./examples/pyodide/">
   <b>Write the model here →</b>
   <span>PyMC runs in the tab under Pyodide. Edit the model, compile it, sample
   it. Costs a Python runtime on first load — tens of seconds.</span>
+</a>
+
+<a class="card" href="./marimo/">
+  <b>A marimo notebook →</b>
+  <span>marimo's Simpson's paradox example, three PyMC models sampled in the
+  tab with <code>mode="WASM"</code>.</span>
 </a>
 
 <a class="card" href="./examples/browser/">
