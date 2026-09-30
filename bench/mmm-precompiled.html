@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MMM compiled beforehand</title>
+<pre id="status">starting</pre>
+<script type="module">
+// bench/models/mmm/browser/, built by `bench/mmm.py native`, sampled as bench/mmm-inpage-worker.js
+// samples: seeds 42..442, two sequential chains of 750 + 500, target 0.9, the gradient-based
+// metric estimate on. Timed: sample() and, when the build has one, an expand.wasm evaluate
+// per retained draw; the statistics come from an untimed sampleWithStats on the same seed.
+import init, { AotSampler, setAotExports, sharedMemory, tapewasmVersion } from "../vendor/index.js";
+const t0 = performance.now();
+await init();
+const dir = "models/mmm/browser/";
+const meta = await (await fetch(dir + "meta.json")).json();
+const missing = (name) => () => { throw new Error(`the module called ${name}, which this page does not provide`); };
+const MATH = { exp: Math.exp, log: Math.log, sin: Math.sin, cos: Math.cos, pow: Math.pow, tan: Math.tan,
+  asin: Math.asin, acos: Math.acos, atan: Math.atan, lgamma: missing("lgamma"), digamma: missing("digamma"), phi: missing("phi") };
+const model = await (await fetch(dir + "model.wasm")).arrayBuffer();
+setAotExports((await WebAssembly.instantiate(model, { tapewasm: { memory: sharedMemory() }, Math: MATH })).instance.exports);
+const n = meta.nParams, e = meta.expand;
+let expand = null;
+if (e) {
+  const S = 8 * (n + e.nOutputs), scratch = Float64Array.from(e.scratchInit);
+  const memory = new WebAssembly.Memory({ initial: Math.ceil((S + scratch.byteLength) / 65536) + 1 });
+  const bytes = await (await fetch(dir + "expand.wasm")).arrayBuffer();
+  const ex = (await WebAssembly.instantiate(bytes, { tapewasm: { memory }, Math: MATH })).instance.exports;
+  expand = (draw, into) => {
+    const f = new Float64Array(memory.buffer);
+    f.set(draw, 0); f.set(scratch, S / 8); ex.evaluate(0, 8 * n, n, S);
+    into.set(f.subarray(n, n + e.nOutputs));
+  };
+}
+const readySeconds = (performance.now() - t0) / 1000;
+const TUNE = 750, DRAWS = 500, CHAINS = 2;
+const make = () => { const s = new AotSampler(n, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames);
+  s.setTargetAccept(0.9); s.setGradBasedEstimate(true); return s; };
+const fits = [];
+for (const seed of [42, 142, 242, 342, 442]) {
+  const fit = { seed, sampling_seconds: 0, evals: 0, divergences: 0, draws: [] };
+  for (let c = 0; c < CHAINS; c++) {
+    const init = new Float64Array(meta.initialPoint);
+    const s = make(), out = e ? new Float64Array(e.nOutputs) : null;
+    const t = performance.now();
+    const draws = s.sample(init, TUNE, DRAWS, BigInt(seed + c));
+    if (expand) for (let d = TUNE; d < TUNE + DRAWS; d++) expand(draws.subarray(d * n, (d + 1) * n), out);
+    fit.sampling_seconds += (performance.now() - t) / 1000;
+    s.free();
+    const k = make(), r = k.sampleWithStats(init, TUNE, DRAWS, BigInt(seed + c), c);
+    const [steps, div, again] = [r.numSteps, r.diverging, r.draws];
+    if (again.some((v, i) => v !== draws[i])) throw new Error("the stats run drew differently");
+    fit.evals += steps.reduce((a, b) => a + b, 0);
+    fit.divergences += div.slice(TUNE).reduce((a, b) => a + b, 0);
+    fit.draws.push(...draws.slice(TUNE * n));
+    k.free();
+  }
+  fits.push(fit);
+  document.getElementById("status").textContent = `fit ${fits.length}`;
+}
+window.RESULT = { tapewasm: tapewasmVersion(), readySeconds, expansion: Boolean(e), nParams: n, fits };
+document.getElementById("status").textContent = "done";
+</script>

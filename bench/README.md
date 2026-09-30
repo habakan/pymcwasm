@@ -35,6 +35,7 @@ target_accept 0.9. The results are in [`RESULTS-mmm.md`](RESULTS-mmm.md).
 uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \
   python bench/mmm.py native /path/to/nuts-rs-wasm
 node bench/mmm.mjs
+node bench/mmm-browser.mjs    # nuts-rs-wasm's hosted demo and this repository's two pages
 uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \
   python bench/mmm.py table
 ```
@@ -45,3 +46,9 @@ gzipped, against 14 KB) twice as fast per evaluation: 14 µs against 29, and nut
 The gradient-based metric estimate, which tapewasm leaves off by default and nutpie turns
 on, moves the step size from 0.083 to 0.224 and halves the evaluations, but it halves the
 ESS as well, so ESS per second barely moves; nutpie's own `draw_diag` row shows the same.
+
+In a browser, `bench/mmm-browser.mjs` puts nuts-rs-wasm's hosted demo (Numba, compiled in the
+page) beside `bench/mmm-inpage.html` (PyMC-Marketing and PyMC under Pyodide, lowered and
+compiled in the page) and `bench/mmm-precompiled.html` (the module `bench/mmm.py native`
+built). PyMC-Marketing's `preliz` imports numba, which Pyodide does not have; the model never
+calls what it imports, so the page stands a module in for it.
