@@ -691,6 +691,12 @@ def _alloc(op, node, ins, cx):
     return (a[0], np.array(arr, dtype=object) if is_tape(a) else np.array(arr, dtype=float))
 
 
+@lowers("AllocEmpty")
+def _alloc_empty(op, node, ins, cx):
+    # Its contents are unspecified and a set_subtensor fills it; zeros are as good as any.
+    return ("c", np.zeros(tuple(int(np.asarray(x[1]).item()) for x in ins)))
+
+
 @lowers("LogAddExp")
 def _logaddexp(op, node, ins, cx):
     # max(a, b) + log(1 + exp(-|a - b|)), written as softplus is, so neither side overflows.

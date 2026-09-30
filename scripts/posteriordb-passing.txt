@@ -12,6 +12,7 @@ GLM_Poisson_Data-GLM_Poisson_model
 GLMM_Poisson_data-GLMM_Poisson_model
 irt_2pl-irt_2pl
 kilpisjarvi_mod-kilpisjarvi
+low_dim_gauss_mix-low_dim_gauss_mix
 low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse
 lsat_data-lsat_model
 M0_data-M0_model
