@@ -4,7 +4,7 @@
 <title>BART in the page</title>
 <style>
   :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --accent:#1f6f5c; --band:#cfe3dc;
-          --ref:#c0392b; --tree:#c9622a; --fresh:#f3c9a8; }
+          --ref:#c0392b; --tree:#c9622a; --fresh:#d6e4f3; }
   body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
          margin: 0 auto; padding: 1rem 16px; max-width: 76rem; }
   h1 { font-size: 1.05rem; margin: .4rem 0; }
@@ -73,10 +73,16 @@
 
 <h2>The trees</h2>
 <p class="desc">
-  mu is the sum of these trees. Each step regrows a tenth of them; the ones regrown since the
-  last frame are shaded. Pick one to follow it beside the chart.
+  mu is the sum of these trees. Each step regrows a tenth of them. Pick one to follow it beside
+  the chart.
 </p>
-<div id="forest"></div>
+<div class="legend">
+  <span><span style="display:inline-block;width:10px;height:10px;background:var(--fresh);border:1px solid var(--line)"></span>
+    changed shape since the last frame</span>
+  <span style="color:var(--tree)">&#9679; leaf</span>
+  <span>&#9679; split</span>
+</div>
+<div id="forest" style="margin-top:.4rem"></div>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
