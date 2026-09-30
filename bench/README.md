@@ -23,3 +23,24 @@ python bench/table.py
 ```
 
 One machine, one run each: the numbers show the shape, not a ranking to three digits.
+
+## nuts-rs-wasm's demo MMM
+
+`bench/mmm.py` and `bench/mmm.mjs` sample the PyMC-Marketing MMM from
+[nuts-rs-wasm](https://github.com/pymc-labs/nuts-rs-wasm)'s `examples/mmm/`, unchanged, with
+nutpie under CPython and with tapewasm in V8 (Node), 2 chains of 750 warmup and 500 draws at
+target_accept 0.9. The results are in [`RESULTS-mmm.md`](RESULTS-mmm.md).
+
+```
+uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with -e . \
+  python bench/mmm.py native /path/to/nuts-rs-wasm
+node bench/mmm.mjs
+python bench/mmm.py table
+```
+
+Two settings decide most of the gap. tapewasm leaves nuts-rs's gradient-based metric
+estimate off by default, to match the reference posteriors elsewhere in this repository; on
+this model that halves the step size and doubles the gradient evaluations, and turning it on
+(`setGradBasedEstimate(true)`) brings both to nutpie's. And `reroll "auto"` suits
+SpiderMonkey and JavaScriptCore: V8 runs this model's straight-line module (`"never"`,
+309 KB, 134 KB gzipped, against 14 KB) about twice as fast per evaluation.
