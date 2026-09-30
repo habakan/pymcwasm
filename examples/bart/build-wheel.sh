@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# Builds bartrs for Pyodide 0.29.2 into wheels/. BARTRS names a checkout whose PGBART takes
-# compile_kwargs["mode"]; pyodide-build fetches Emscripten, and rustup the pinned nightly.
+# Builds bartrs for Pyodide 0.29.2 into wheels/, from BARTRS=<checkout> or else the fork's
+# commit whose PGBART takes compile_kwargs["mode"]. pyodide-build fetches Emscripten.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bartrs="$(cd "${BARTRS:?set BARTRS to a bartrs checkout}" && pwd)"
+if [ -n "${BARTRS:-}" ]; then
+  bartrs="$(cd "$BARTRS" && pwd)"
+else
+  bartrs="$(mktemp -d)"
+  git -C "$bartrs" init -q
+  git -C "$bartrs" fetch -q --depth 1 https://github.com/habakan/bartrs a8959fd0e3f1a4a07031605e66d689a29a9858a8
+  git -C "$bartrs" checkout -q FETCH_HEAD
+fi
 
 tools="$(mktemp -d)"
 uv venv -q -p 3.13 "$tools"
