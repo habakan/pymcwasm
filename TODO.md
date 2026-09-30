@@ -36,7 +36,8 @@ parameter-dependent index rather than freezing it at the trace point.
 
 ## Elsewhere
 
-- `Scan`, so no state-space models.
+- A `Scan` with a `while` condition, or one whose step count depends on a parameter;
+  a fixed-length `Scan` is unrolled.
 - A `Switch` on a parameter, so no truncated or censored likelihoods.
 - Discrete parameters.
 - A Gaussian process is untried; its `Cholesky` is of a parameter-dependent
