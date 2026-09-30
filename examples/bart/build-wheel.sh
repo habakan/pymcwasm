@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds bartrs for Pyodide 0.29.2 into wheels/, from BARTRS=<checkout> or else the fork's
-# commit whose PGBART takes compile_kwargs["mode"]. pyodide-build fetches Emscripten.
+# Builds bartrs for Pyodide 0.29.2 into wheels/, from BARTRS=<checkout> or else a fork commit
+# whose PGBART takes compile_kwargs["mode"] and exposes its forest. pyodide-build fetches Emscripten.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${BARTRS:-}" ]; then
@@ -8,7 +8,7 @@ if [ -n "${BARTRS:-}" ]; then
 else
   bartrs="$(mktemp -d)"
   git -C "$bartrs" init -q
-  git -C "$bartrs" fetch -q --depth 1 https://github.com/habakan/bartrs a8959fd0e3f1a4a07031605e66d689a29a9858a8
+  git -C "$bartrs" fetch -q --depth 1 https://github.com/habakan/bartrs 344e44026c9c88c7bdb8aa86dbaf6b02013cff38
   git -C "$bartrs" checkout -q FETCH_HEAD
 fi
 
