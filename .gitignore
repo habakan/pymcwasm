@@ -14,3 +14,6 @@ examples/jupyterlite/files/*.whl
 
 # The benchmark reads posteriordb models copied here by bench/prepare.py.
 bench/models
+
+# build-wheel.sh output: bartrs built for Pyodide.
+examples/bart/wheels

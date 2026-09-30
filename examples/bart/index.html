@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BART in the page</title>
+<style>
+  :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --accent:#1f6f5c; --band:#cfe3dc; --ref:#c0392b; }
+  body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+         margin: 0 auto; padding: 1rem 16px; max-width: 52rem; }
+  h1 { font-size: 1.05rem; margin: .4rem 0; }
+  a.home { color: var(--dim); font-size: 12px; text-decoration: none; }
+  .desc { color: var(--dim); font-size: 12px; }
+  pre.desc { white-space: pre-wrap; }
+  .bar { display: flex; flex-wrap: wrap; gap: .9rem; align-items: center; margin: .8rem 0; }
+  label { color: var(--dim); font-size: 12px; }
+  input { font: inherit; width: 4.5rem; }
+  button { font: inherit; padding: .35rem 1rem; border: 1px solid var(--ink); border-radius: 4px;
+           background: var(--ink); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--dim); font-size: 12px; }
+  #status b { color: var(--ink); }
+  svg { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .legend { display: flex; gap: 1rem; font-size: 11px; color: var(--dim); margin-top: .3rem; }
+</style>
+
+<a class="home" href="../../">&larr; pymcwasm</a>
+<h1>BART in the page</h1>
+<p class="desc">
+  A PyMC model with a <code>pymc_bart.BART</code> term, sampled by PyMC's own
+  <code>CompoundStep</code> under Pyodide: bartrs's particle Gibbs on the trees, NUTS on
+  <code>sigma</code>. Every log density either sampler asks for is compiled with
+  <code>mode="WASM"</code>. The first run installs PyMC, which takes tens of seconds.
+</p>
+<pre class="desc">y ~ Normal(mu, sigma),  mu = BART(x),  sigma ~ HalfNormal(1),  y = sin(x) + N(0, 0.2)</pre>
+
+<div class="bar">
+  <label>points <input id="n" type="number" value="200" min="20" max="1000"></label>
+  <label>trees <input id="trees" type="number" value="50" min="5" max="200"></label>
+  <label>draws <input id="draws" type="number" value="500" min="50" max="3000"></label>
+  <button id="run">sample</button>
+  <span id="status">not loaded</span>
+</div>
+<svg id="plot" viewBox="0 0 640 300" role="img" aria-label="data, posterior mean of mu and its 90% band"></svg>
+<div class="legend">
+  <span style="color:var(--accent)">&#9644; posterior mean of mu, 90% band</span>
+  <span style="color:var(--ref)">- - sin(x)</span>
+  <span>&#9679; data</span>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const worker = new Worker("worker.js", { type: "module" });
+const t0 = { at: 0 };
+
+$("run").onclick = () => {
+  $("run").disabled = true;
+  t0.at = performance.now();
+  worker.postMessage({ n: +$("n").value, trees: +$("trees").value, draws: +$("draws").value, seed: 1 });
+};
+
+worker.onmessage = ({ data }) => {
+  if (data.msg) $("status").textContent = data.msg + "…";
+  if (data.error) { $("status").textContent = data.error.split("\n").slice(-2).join(" "); $("run").disabled = false; }
+  if (data.done) {
+    const r = data.done;
+    $("status").innerHTML = `sampled in <b>${r.seconds.toFixed(1)}s</b> · sigma <b>${r.sigma.toFixed(3)}</b>` +
+      ` · RMSE to sin(x) <b>${r.rmse.toFixed(3)}</b>`;
+    draw(r);
+    $("run").disabled = false;
+  }
+};
+
+function draw({ x, y, mean, lo, hi }) {
+  const W = 640, H = 300, P = 28;
+  const ys = [...y, ...lo, ...hi];
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sx = (v) => P + (v / 10) * (W - 2 * P);
+  const sy = (v) => H - P - ((v - y0) / (y1 - y0)) * (H - 2 * P);
+  const line = (vs) => vs.map((v, i) => `${sx(x[i]).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
+  const band = line(hi) + " " + lo.map((v, i) => [x[i], v]).reverse()
+    .map(([a, v]) => `${sx(a).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
+  $("plot").innerHTML =
+    `<polygon points="${band}" fill="var(--band)"/>` +
+    y.map((v, i) => `<circle cx="${sx(x[i]).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="1.6" fill="var(--dim)"/>`).join("") +
+    `<polyline points="${line(x.map(Math.sin))}" fill="none" stroke="var(--ref)" stroke-dasharray="4 3"/>` +
+    `<polyline points="${line(mean)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+}
+</script>
