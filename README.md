@@ -313,8 +313,11 @@ examples/pyodide/  the in-page path
 
 - **`Scan` is not lowered**, so state-space models are out. It did not appear in
   any of the nine logp graphs surveyed, but it will.
-- **A `Switch` on a parameter is refused** rather than resolved while tracing,
-  which rules out truncated and censored likelihoods.
+- **A `Switch` on an ordering of parameters needs tapewasm 0.3.5**, whose `pick`
+  takes the branch where the module is evaluated rather than where it was traced;
+  0.3.3 refuses the tape. A bounds check (one side an infinity) and a test for
+  equality, which a parameter meets on a set of measure zero, still fold.
+- **Discrete parameters are refused by name**: NUTS samples continuous ones only.
 - **A Gaussian process is untried.** Its `Cholesky` is of a covariance built from
   the parameters, so it lowers to a cubic number of tape nodes in the number of
   points. Nothing is known to be wrong with it.
