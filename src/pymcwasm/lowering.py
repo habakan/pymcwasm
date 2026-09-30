@@ -24,6 +24,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
+from pytensor.graph.rewriting.utils import rewrite_graph
 try:
     from pytensor.graph.traversal import ancestors, io_toposort
 except ImportError:
@@ -881,6 +883,48 @@ def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=Tr
         f.write("\n".join(header + w.lines + tail) + "\n")
 
     return n_params, groups
+
+
+def lower_expansion(model, point, var_names=None):
+    """The tape mapping the unconstrained vector to what nutpie calls the expansion.
+
+    Each selected variable of `model.unobserved_value_vars` — a free variable in its
+    own space, or a deterministic — raveled and concatenated in `var_names` order,
+    free variables then deterministics by default, as nuts-rs-wasm's Numba path lays
+    them out. Returns the tape text and one `{name, shape, size, dims}` per name.
+    """
+    names = list(var_names) if var_names is not None else [
+        v.name for v in [*model.free_RVs, *model.deterministics]]
+    available = {v.name: v for v in model.unobserved_value_vars}
+    if not names or len(set(names)) != len(names) or set(names) - available.keys():
+        raise ValueError("var_names must be unique unobserved model variable names")
+    selected = [pt.as_tensor(available[k], allow_xtensor_conversion=True) for k in names]
+    # Deterministics written with dims stay XTensor ops until compiled; model.logp()
+    # is lowered already, these are not.
+    selected = rewrite_graph(selected, include=("lower_xtensor",))
+
+    # Comparisons fold at `point` as in `lower`: here the bounds CheckParameterValue tests.
+    value_vars = model.value_vars
+    w, lowered = lower_graph(value_vars, selected, [point[v.name] for v in value_vars])
+
+    outputs, layout = [], []
+    for name, (kind, vals) in zip(names, lowered):
+        vals = np.asarray(vals)
+        if kind == "c" and not any(not l.startswith("new_var") for l in w.lines):
+            w.emit("mul_c", "0", "0.0")  # const_node needs an op before it
+        outputs += [int(vals[k]) if kind == "t" else w.const_node(float(vals[k]))
+                    for k in np.ndindex(vals.shape)]
+        dims = list(model.named_vars_to_dims.get(name, ()))
+        layout.append({
+            "name": name, "shape": list(vals.shape), "size": int(vals.size),
+            "dims": [dims[i] if i < len(dims) and dims[i] is not None else f"{name}_dim_{i}"
+                     for i in range(vals.ndim)],
+        })
+
+    n_params = sum(np.size(point[v.name]) for v in value_vars)
+    lines = [f"n_params {n_params}", *w.lines, f"root {outputs[0]}",
+             "outputs " + " ".join(map(str, outputs))]
+    return "\n".join(lines) + "\n", layout
 
 
 def _dimshuffle(op, arr):

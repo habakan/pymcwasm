@@ -114,12 +114,13 @@ npm test         # the same seven models in three engines, checked against nutpi
 
 ### What a build step produces
 
-Compiling a model writes three files into `artifacts/<model>/`. Together they
+Compiling a model writes these files into `artifacts/<model>/`. Together they
 are everything a page needs; there is no other state.
 
 | | |
 | --- | --- |
 | `model.wasm` | the module. Exports `log_prob_grad`, imports linear memory and its own arithmetic. |
+| `expand.wasm` | a second module whose `evaluate` maps one draw to each free variable in its own space and each deterministic, raveled in the order nutpie and nuts-rs-wasm's Numba path call the expansion. `--no-expand` leaves it out. |
 | `meta.json` | the numbers that go with it — see below. |
 | `reference.json` | nutpie's posterior for the same model, so the page can check itself: a mean, an sd and that mean's `mcse` per parameter, and the versions that produced them. Not needed to sample. |
 
@@ -137,6 +138,13 @@ are everything a page needs; there is no other state.
 - **`paramNames`** and **`initialPoint`** — what the columns are called, and a
   starting point the sampler accepts.
 
+Beside them, `expand` carries `expand.wasm`'s own `scratchInit`, `layoutId` and
+`nOutputs`, and its `layout` and `coords` in nuts-rs-wasm's `expanded_layout` form:
+`{name, shape, size, dims}` per variable. On nuts-rs-wasm's demo MMM both match
+what its Numba path reports, the 1,985 values agree with PyMC to 1e-15 at points
+away from the trace point, and one draw's `evaluate` takes 26 µs in V8.
+The MMM's expansion needs tapewasm 0.3.4, which records a sum over repeated rows.
+
 Building one needs Python, PyMC and Node, and no Rust: the emitter is npm's
 `tapewasm`, resolved from the working directory. A model file defines `model`,
 or `make_model(data)` as posteriordb's do:
@@ -144,7 +152,7 @@ or `make_model(data)` as posteriordb's do:
 ```
 npm install tapewasm
 pip install ".[build]"
-pymcwasm-build model.py out/ --data data.json   # out/model.wasm, out/meta.json
+pymcwasm-build model.py out/ --data data.json   # out/model.wasm, out/expand.wasm, out/meta.json
 ```
 
 `--reroll always` trades gradient speed for a smaller module, and `--no-log-lik`

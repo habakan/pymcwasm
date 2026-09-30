@@ -13,7 +13,7 @@ import pymc as pm
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from pymcwasm.lowering import _apply, lower  # noqa: E402
+from pymcwasm.lowering import _apply, lower, lower_expansion  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
@@ -83,6 +83,11 @@ def test_build_writes_what_a_precompiled_host_reads(tmp_path, monkeypatch):
     assert len(meta["initialPoint"]) == 2 and 0 <= meta["layoutId"] < 2**32
     assert len(meta["scratchInit"]) >= 4 and meta["logLik"][0]["shape"] == [3]
     assert (tmp_path / "model.wasm").read_bytes()[:4] == b"\0asm"
+    assert meta["expand"]["layout"] == [
+        {"name": "mu", "shape": [], "size": 1, "dims": []},
+        {"name": "sigma", "shape": [], "size": 1, "dims": []},
+    ]
+    assert (tmp_path / "expand.wasm").read_bytes()[:4] == b"\0asm"
 
 
 def test_a_start_where_pymc_gradient_is_nan_is_not_refused():
@@ -96,3 +101,28 @@ def test_a_start_where_pymc_gradient_is_nan_is_not_refused():
     if np.all(np.isfinite(grad)):
         pytest.skip("this PyMC's gradient is finite here")
     starting_point(m)
+
+
+def test_the_expansion_is_each_variable_in_its_own_space_then_the_deterministics():
+    with pm.Model(coords={"g": ["a", "b"]}) as m:
+        mu = pm.Normal("mu", 0, 1, dims="g")
+        sigma = pm.HalfNormal("sigma", 1)
+        pm.Deterministic("scaled", mu * sigma, dims="g")
+        pm.Normal("y", mu.sum(), sigma, observed=[0.1, -0.3])
+    tape, layout = lower_expansion(m, m.initial_point())
+    assert [(v["name"], v["shape"], v["dims"]) for v in layout] == [
+        ("mu", [2], ["g"]), ("sigma", [], []), ("scaled", [2], ["g"])]
+
+    # Replayed at a point the tape was not traced at.
+    params = [0.3, -0.7, 0.4]
+    vals, outputs = [], []
+    for line in tape.splitlines():
+        f = line.split()
+        if f[0] == "outputs":
+            outputs = [int(i) for i in f[1:]]
+        elif f[0] == "new_var" and len(vals) < len(params):
+            vals.append(params[len(vals)])
+        elif f[0] not in ("n_params", "root"):
+            vals.append(_apply(f[0], f[1:], vals))
+    s = np.exp(0.4)
+    np.testing.assert_allclose([vals[i] for i in outputs], [0.3, -0.7, s, 0.3 * s, -0.7 * s])
