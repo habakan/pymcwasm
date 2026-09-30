@@ -1,6 +1,7 @@
 // Pyodide in a worker: PyMC's own CompoundStep, PGBART on the trees and NUTS on sigma,
 // with every logp compiled by `mode="WASM"`. bartrs is the wheel build-wheel.sh makes.
-// A per-draw callback posts mu and the forest as sampling runs, at most every 80 ms.
+// A per-draw callback posts mu, the forest and the intervals over the draws so far, at most
+// every 80 ms.
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.2/full/pyodide.mjs";
 
 const BARTRS = "bartrs-0.4.0-cp313-cp313-pyodide_2025_0_wasm32.whl";
@@ -54,14 +55,27 @@ def forest_of(step):
     return [{"var": list(t.split_var), "val": finite(t.split_val), "leaf": finite(t.leaf_val)}
             for t in step.pg_bart.forest]
 
+# Posterior draws only: mu, and mu plus that draw's noise for the predictive interval.
+post_mu, post_y = [], []
+noise = np.random.default_rng(0)
+
+def intervals():
+    q = lambda draws: np.quantile(np.asarray(draws), [0.05, 0.95], axis=0).tolist()
+    (lo, hi), (plo, phi) = q(post_mu), q(post_y)
+    return {"n": len(post_mu), "mean": np.mean(post_mu, 0).tolist(), "lo": lo, "hi": hi, "plo": plo, "phi": phi}
+
 last = [0.0]
 def on_draw(trace, draw):
+    if not draw.tuning:
+        m = draw.point["mu"]
+        post_mu.append(m)
+        post_y.append(m + np.exp(draw.point["sigma_log__"]) * noise.normal(size=m.size))
     now = time.perf_counter()
     if now - last[0] < 0.08 and not draw.is_last:
         return
     last[0] = now
     emit(json.dumps({"i": draw.draw_idx, "tuning": draw.tuning, "mu": draw.point["mu"].tolist(),
-                     "trees": forest_of(bart_step)}))
+                     "trees": forest_of(bart_step), **(intervals() if post_mu else {})}))
 
 a = ARGS
 rng = np.random.default_rng(a["seed"])
@@ -79,8 +93,7 @@ with pm.Model():
                       compute_convergence_checks=False, compile_kwargs={"mode": "WASM"})
     seconds = time.perf_counter() - t
 m = idata.posterior["mu"].values[0]
-json.dumps({"x": x.tolist(), "y": y.tolist(), "trees": forest_of(bart_step), "mean": m.mean(0).tolist(),
-            "lo": np.quantile(m, 0.05, 0).tolist(), "hi": np.quantile(m, 0.95, 0).tolist(),
+json.dumps({"x": x.tolist(), "y": y.tolist(), "trees": forest_of(bart_step), **intervals(),
             "sigma": float(idata.posterior["sigma"].mean()),
             "rmse": float(np.sqrt(np.mean((m.mean(0) - np.sin(x)) ** 2))), "seconds": seconds})
 `);

@@ -4,7 +4,7 @@
 <title>BART in the page</title>
 <style>
   :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --accent:#1f6f5c; --band:#cfe3dc;
-          --ref:#c0392b; --tree:#c9622a; --fresh:#d6e4f3; }
+          --ref:#c0392b; --tree:#c9622a; --fresh:#d6e4f3; --pred:#e4efea; }
   html, body { height: 100%; }
   body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
          margin: 0; padding: .8rem 16px; box-sizing: border-box;
@@ -77,7 +77,9 @@
   <div class="panel">
     <svg id="plot" role="img" aria-label="data and mu"></svg>
     <div class="legend">
-      <span style="color:var(--accent)">&#9644; mu at the current draw; after sampling, its posterior mean and 90% band</span>
+      <span style="color:var(--accent)">&#9644; mu at the current draw; after sampling, its posterior mean</span>
+      <span><span class="swatch" style="background:var(--band)"></span> 90% interval of mu over the draws so far</span>
+      <span><span class="swatch" style="background:var(--pred)"></span> 90% posterior predictive, mu plus noise</span>
       <span style="color:var(--ref)">- - sin(x)</span>
       <span>&#9679; data</span>
     </div>
@@ -136,8 +138,9 @@ worker.onmessage = ({ data: m }) => {
 
 function tick(t) {
   if (t.x) { data = t; prev = []; plot(null); return; }
-  $("status").innerHTML = `${t.tuning ? "tuning" : "drawing"} <b>${t.i + 1}</b> / ${total}`;
-  plot(t.mu);
+  $("status").innerHTML = `${t.tuning ? "tuning" : "drawing"} <b>${t.i + 1}</b> / ${total}` +
+    (t.n ? ` · intervals over <b>${t.n}</b> draws` : "");
+  plot(t.mu, t.n ? t : null);
   showForest(t.trees);
 }
 
@@ -235,16 +238,17 @@ function plot(line, band) {
   if (!data) return;
   const { x, y } = data;
   const [W, H] = fit($("plot")), P = 20;
-  const ys = [...y, ...(band ? [...band.lo, ...band.hi] : [])];
+  const ys = [...y, ...(band ? [...band.plo, ...band.phi] : [])];
   const y0 = Math.min(...ys), y1 = Math.max(...ys);
   const sx = (v) => P + (v / 10) * (W - 2 * P);
   const sy = (v) => H - P - ((v - y0) / (y1 - y0)) * (H - 2 * P);
   const pts = (vs) => vs.map((v, i) => `${sx(x[i]).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
   let svg = "";
-  if (band) {
-    const back = band.lo.map((v, i) => [x[i], v]).reverse().map(([a, v]) => `${sx(a).toFixed(1)},${sy(v).toFixed(1)}`);
-    svg += `<polygon points="${pts(band.hi)} ${back.join(" ")}" fill="var(--band)"/>`;
-  }
+  const area = (lo, hi, fill) => {
+    const back = lo.map((v, i) => [x[i], v]).reverse().map(([a, v]) => `${sx(a).toFixed(1)},${sy(v).toFixed(1)}`);
+    return `<polygon points="${pts(hi)} ${back.join(" ")}" fill="${fill}"/>`;
+  };
+  if (band) svg += area(band.plo, band.phi, "var(--pred)") + area(band.lo, band.hi, "var(--band)");
   svg += y.map((v, i) => `<circle cx="${sx(x[i]).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="1.6" fill="var(--dim)"/>`).join("");
   svg += `<polyline points="${pts(x.map(Math.sin))}" fill="none" stroke="var(--ref)" stroke-dasharray="4 3"/>`;
   if (line) svg += `<polyline points="${pts(line)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
