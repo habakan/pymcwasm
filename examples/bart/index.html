@@ -21,6 +21,11 @@
            background: var(--ink); color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   #status { color: var(--dim); font-size: 12px; }
+  #progress { display: flex; align-items: center; gap: .35rem; font-size: 11px; color: var(--dim); }
+  #progress .seg { width: 7rem; height: 8px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  #progress .seg i { display: block; height: 100%; width: 0; }
+  #progress .tune i { background: var(--dim); }
+  #progress .draw i { background: var(--accent); }
   #status b { color: var(--ink); }
   svg { display: block; width: 100%; border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; }
   svg text { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--ink); }
@@ -69,6 +74,7 @@
     <label>trees <input id="trees" type="number" value="50" min="5" max="200"></label>
     <label>draws <input id="draws" type="number" value="500" min="50" max="3000"></label>
     <button id="run">sample</button>
+    <span id="progress">tune <span class="seg tune"><i></i></span> draws <span class="seg draw"><i></i></span></span>
     <span id="status">not loaded</span>
   </div>
 </header>
@@ -119,6 +125,7 @@ addEventListener("resize", () => { plot(...shown); showSelected(); });
 $("run").onclick = () => {
   $("run").disabled = true;
   total = 2 * +$("draws").value;
+  progress(0);
   worker.postMessage({ n: +$("n").value, trees: +$("trees").value, draws: +$("draws").value, seed: 1 });
 };
 
@@ -132,6 +139,7 @@ worker.onmessage = ({ data: m }) => {
       ` · RMSE to sin(x) <b>${r.rmse.toFixed(3)}</b>`;
     plot(r.mean, r);
     showForest(r.trees);
+    progress(total);
     $("run").disabled = false;
   }
 };
@@ -141,7 +149,15 @@ function tick(t) {
   $("status").innerHTML = `${t.tuning ? "tuning" : "drawing"} <b>${t.i + 1}</b> / ${total}` +
     (t.n ? ` · intervals over <b>${t.n}</b> draws` : "");
   plot(t.mu, t.n ? t : null);
+  progress(t.i + 1);
   showForest(t.trees);
+}
+
+// Tuning is the first half of the run, as the worker passes tune=draws.
+function progress(done) {
+  const half = total / 2;
+  $("progress").querySelector(".tune i").style.width = `${Math.min(done, half) / half * 100}%`;
+  $("progress").querySelector(".draw i").style.width = `${Math.max(done - half, 0) / half * 100}%`;
 }
 
 // Walks one tree: left when x <= the threshold, as bartrs does.
