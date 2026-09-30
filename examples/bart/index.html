@@ -69,6 +69,13 @@
     bartrs's particle Gibbs on the trees, NUTS on <code>sigma</code>, every log density compiled with
     <code>mode="WASM"</code>. The first run installs PyMC, which takes tens of seconds.
   </p>
+  <p class="desc">
+    Built on <a href="https://github.com/pymc-devs/pymc-bart">pymc-bart</a> and
+    <a href="https://github.com/pymc-devs/bartrs">bartrs</a>, with bartrs built for Pyodide from
+    <a href="https://github.com/habakan/bartrs/tree/344e44026c9c88c7bdb8aa86dbaf6b02013cff38">a fork</a>
+    that adds two changes not yet upstream: PGBART compiling its logp in the mode
+    <code>compile_kwargs</code> gives, and a getter for the current forest. The data is synthetic.
+  </p>
   <div class="bar">
     <label>points <input id="n" type="number" value="200" min="20" max="1000"></label>
     <label>trees <input id="trees" type="number" value="50" min="5" max="200"></label>
