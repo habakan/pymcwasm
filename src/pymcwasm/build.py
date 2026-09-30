@@ -1,6 +1,6 @@
-"""Compile a PyMC model into the files a page serves: `model.wasm` and `meta.json`.
+"""Compile a PyMC model into the files a page serves: `model.wasm`, `expand.wasm`, `meta.json`.
 
-    pymcwasm-build model.py out/ [--data data.json] [--reroll always]
+    pymcwasm-build model.py out/ [--data data.json] [--reroll always] [--var-names a,b]
 
 `model.py` defines either `model`, a `pm.Model`, or `make_model(data)` / `model(data)`
 returning one. The emitter is npm's `tapewasm`, resolved from the working directory
@@ -16,6 +16,7 @@ import subprocess
 import numpy as np
 
 from . import param_names, starting_point, tape_for
+from .lowering import lower_expansion
 
 COMPILER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compile.mjs")
 
@@ -29,8 +30,12 @@ def compile_tape(tape, wasm_path, reroll="auto"):
     return json.loads(out.stdout)
 
 
-def build(model, out_dir, log_lik=True, reroll="auto", point=None):
-    """Write `model.tape`, `model.wasm` and `meta.json` into `out_dir`, and return the meta."""
+def build(model, out_dir, log_lik=True, reroll="auto", point=None, expand=True, var_names=None):
+    """Write `model.tape`, `model.wasm` and `meta.json` into `out_dir`, and return the meta.
+
+    With `expand`, also `expand.tape` and `expand.wasm`, whose `evaluate` returns the
+    selected variables in their own space and the deterministics for one draw.
+    """
     os.makedirs(out_dir, exist_ok=True)
     tape, point, groups = tape_for(model, point, log_lik=log_lik)
     with open(os.path.join(out_dir, "model.tape"), "w") as f:
@@ -53,6 +58,22 @@ def build(model, out_dir, log_lik=True, reroll="auto", point=None):
         "logLik": groups,
         "tapewasm": built["tapewasm"],
     }
+    if expand:
+        etape, layout = lower_expansion(model, point, var_names)
+        with open(os.path.join(out_dir, "expand.tape"), "w") as f:
+            f.write(etape)
+        ebuilt = compile_tape(etape, os.path.join(out_dir, "expand.wasm"), reroll)
+        assert ebuilt["nOutputs"] == sum(v["size"] for v in layout)
+        meta["expand"] = {
+            "layoutId": ebuilt["layoutId"],
+            "scratchInit": ebuilt["scratchInit"],
+            "nOutputs": ebuilt["nOutputs"],
+            # nuts-rs-wasm's expanded_layout and coords, so a host reads either the same way.
+            "layout": layout,
+            "coords": json.loads(json.dumps(
+                {str(k): np.asarray(v).tolist() for k, v in model.coords.items() if v is not None},
+                default=lambda value: value.isoformat())),
+        }
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
     return meta
@@ -79,6 +100,10 @@ def main(argv=None):
                    help="`always` trades gradient speed for a smaller module")
     p.add_argument("--no-log-lik", action="store_true",
                    help="leave out the per-observation terms `evaluate` reports")
+    p.add_argument("--no-expand", action="store_true",
+                   help="leave out `expand.wasm`, the constrained values and deterministics")
+    p.add_argument("--var-names", help="comma-separated variables `expand.wasm` returns "
+                   "(default: free variables, then deterministics)")
     args = p.parse_args(argv)
 
     data = None
@@ -86,7 +111,9 @@ def main(argv=None):
         with open(args.data) as f:
             data = json.load(f)
     model = load_model(args.model, data)
-    meta = build(model, args.out_dir, log_lik=not args.no_log_lik, reroll=args.reroll)
+    meta = build(model, args.out_dir, log_lik=not args.no_log_lik, reroll=args.reroll,
+                 expand=not args.no_expand,
+                 var_names=args.var_names.split(",") if args.var_names else None)
     size = os.path.getsize(os.path.join(args.out_dir, "model.wasm"))
     print(f"{args.out_dir}: {meta['nParams']} params, {size} bytes of wasm")
 
