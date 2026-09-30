@@ -19,10 +19,10 @@ async function load() {
   }
   py.FS.mkdirTree("/pkg/pymcwasm");
   for (const f of ["__init__.py", "_bridge.py", "lowering.py", "build.py", "linker.py"]) {
-    py.FS.writeFile(`/pkg/pymcwasm/${f}`, await (await fetch(`/pkg/pymcwasm/${f}`)).text());
+    py.FS.writeFile(`/pkg/pymcwasm/${f}`, await (await fetch(`../../pkg/pymcwasm/${f}`)).text());
   }
   py.FS.writeFile("/pkg/bart_pyodide.py", await (await fetch("bart_pyodide.py")).text());
-  py.globals.set("TAPEWASM", new URL("/vendor/pkg/tapewasm.js", location.href).href);
+  py.globals.set("TAPEWASM", new URL("../../vendor/pkg/tapewasm.js", location.href).href);
   say("loading pymc-bart");
   await py.runPythonAsync(`
 import sys
