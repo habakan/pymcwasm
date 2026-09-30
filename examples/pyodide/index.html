@@ -42,9 +42,11 @@
   .az-summary th, .az-summary td { padding: .15rem .35rem; text-align: right;
     border-bottom: 1px solid var(--line); }
   footer { margin-top: 2rem; color: var(--dim); font-size: 12px; }
+  nav.links { color: var(--dim); font-size: 12px; flex: none; }
+  nav.links a[href^="https://github.com"] { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 </style>
 
-<a class="home" href="../../">&larr; pymcwasm</a>
+<nav class="links"><a class="home" href="../../">&larr; pymcwasm</a> · <a class="home" href="https://github.com/habakan/pymcwasm">GitHub</a> · <a class="home" href="https://github.com/habakan/pymcwasm/tree/main/examples/pyodide">this page's source</a></nav>
 <h1>A PyMC model written here, compiled here, sampled here</h1>
 <p class="sub">
   PyMC runs in this page under Pyodide and builds the graph. The log density is
