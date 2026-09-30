@@ -16,9 +16,11 @@ await tw.default({ module_or_path: fs.readFileSync(new URL("pkg/tapewasm_bg.wasm
 
 const OUT = new URL("models/mmm/", import.meta.url);
 const FITS = 10, TUNE = 750, DRAWS = 500, CHAINS = 2;
+const missing = (name) => () => { throw new Error(`the module called ${name}, which this bench does not provide`); };
 const MATH = {
   exp: Math.exp, log: Math.log, sin: Math.sin, cos: Math.cos, pow: Math.pow, tan: Math.tan,
-  asin: Math.asin, acos: Math.acos, atan: Math.atan, lgamma: () => NaN, digamma: () => NaN, phi: () => NaN,
+  asin: Math.asin, acos: Math.acos, atan: Math.atan,
+  lgamma: missing("lgamma"), digamma: missing("digamma"), phi: missing("phi"),
 };
 
 const runs = [];
@@ -29,24 +31,37 @@ for (const reroll of ["auto", "never"]) {
     { tapewasm: { memory: tw.sharedMemory() }, Math: MATH });
   tw.setAotExports(aot.instance.exports);
   const n = nParams = meta.nParams;
+  const sampler = (gradBased) => {
+    const s = new tw.AotSampler(n, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames);
+    s.setTargetAccept(0.9);
+    s.setGradBasedEstimate(gradBased);
+    return s;
+  };
   for (const gradBased of [false, true]) {
     const fits = [];
     for (let f = 0; f < FITS; f++) {
-      const fit = { evals: 0, divergences: 0, step_size: 0, draws: [] };
-      const t = performance.now();
+      const fit = { seconds: 0, evals: 0, divergences: 0, step_size: 0, draws: [] };
       for (let c = 0; c < CHAINS; c++) {
-        const s = new tw.AotSampler(n, new Float64Array(meta.scratchInit), meta.layoutId, meta.paramNames);
-        s.setTargetAccept(0.9);
-        s.setGradBasedEstimate(gradBased);
-        const r = s.sampleWithStats(new Float64Array(meta.initialPoint), TUNE, DRAWS, BigInt(1000 * (f + 1) + c), c);
+        const seed = BigInt(1000 * (f + 1) + c);
+        const init = new Float64Array(meta.initialPoint);
+        // Timed alone: sampleWithStats evaluates the density once more per draw for `lp`.
+        const timed = sampler(gradBased);
+        const t = performance.now();
+        const draws = timed.sample(init, TUNE, DRAWS, seed);
+        fit.seconds += (performance.now() - t) / 1000;
+        timed.free();
+
+        const counted = sampler(gradBased);
+        const r = counted.sampleWithStats(init, TUNE, DRAWS, seed, c);
+        const [steps, diverging, stepSize, again] = [r.numSteps, r.diverging, r.stepSize, r.draws];
+        if (again.some((v, i) => v !== draws[i])) throw new Error("the same seed drew differently with stats");
         for (let i = 0; i < TUNE + DRAWS; i++) {
-          fit.evals += r.numSteps[i];
-          if (i >= TUNE) { fit.divergences += r.diverging[i]; fit.step_size += r.stepSize[i] / (DRAWS * CHAINS); }
+          fit.evals += steps[i];
+          if (i >= TUNE) { fit.divergences += diverging[i]; fit.step_size += stepSize[i] / (DRAWS * CHAINS); }
         }
-        fit.draws.push(...r.draws.slice(TUNE * n));
-        s.free();
+        fit.draws.push(...draws.slice(TUNE * n));
+        counted.free();
       }
-      fit.seconds = (performance.now() - t) / 1000;
       fits.push(fit);
     }
     runs.push({ reroll, gradBased, fits });
@@ -54,4 +69,5 @@ for (const reroll of ["auto", "never"]) {
   }
 }
 const versions = { node: process.version, tapewasm: tw.tapewasmVersion() };
-fs.writeFileSync(new URL("tapewasm.json", OUT), JSON.stringify({ versions, nParams, runs }));
+fs.writeFileSync(new URL("tapewasm.json", OUT),
+  JSON.stringify({ versions, nParams, tune: TUNE, draws: DRAWS, chains: CHAINS, runs }));

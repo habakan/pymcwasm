@@ -32,15 +32,16 @@ nutpie under CPython and with tapewasm in V8 (Node), 2 chains of 750 warmup and 
 target_accept 0.9. The results are in [`RESULTS-mmm.md`](RESULTS-mmm.md).
 
 ```
-uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with -e . \
+uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \
   python bench/mmm.py native /path/to/nuts-rs-wasm
 node bench/mmm.mjs
-python bench/mmm.py table
+uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \
+  python bench/mmm.py table
 ```
 
-Two settings decide most of the gap. tapewasm leaves nuts-rs's gradient-based metric
-estimate off by default, to match the reference posteriors elsewhere in this repository; on
-this model that halves the step size and doubles the gradient evaluations, and turning it on
-(`setGradBasedEstimate(true)`) brings both to nutpie's. And `reroll "auto"` suits
-SpiderMonkey and JavaScriptCore: V8 runs this model's straight-line module (`"never"`,
-309 KB, 134 KB gzipped, against 14 KB) about twice as fast per evaluation.
+What decides the gap is the time per evaluation. `reroll "auto"` suits SpiderMonkey and
+JavaScriptCore, and V8 runs this model's straight-line module (`"never"`, 309 KB, 134 KB
+gzipped, against 14 KB) twice as fast per evaluation: 14 µs against 29, and nutpie's 10.
+The gradient-based metric estimate, which tapewasm leaves off by default and nutpie turns
+on, moves the step size from 0.083 to 0.224 and halves the evaluations, but it halves the
+ESS as well, so ESS per second barely moves; nutpie's own `draw_diag` row shows the same.

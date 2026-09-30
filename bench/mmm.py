@@ -1,12 +1,17 @@
 """nuts-rs-wasm's demo MMM under nutpie and under tapewasm in V8.
 
-    uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with -e . \\
+    uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \\
       python bench/mmm.py native /path/to/nuts-rs-wasm
     node bench/mmm.mjs
-    python bench/mmm.py table
+    uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \\
+      python bench/mmm.py table
 
 The model is nuts-rs-wasm's `examples/mmm/model.py` on its CSV, unchanged, sampled as
 its tapewasm backend PR was: 2 chains of 750 warmup and 500 draws, target_accept 0.9.
+Both samplers run their chains one after the other. nutpie's time includes building
+its InferenceData; tapewasm's is `sample()` alone, with the statistics read from a
+second, untimed `sampleWithStats()` on the same seed. nutpie jitters each chain's
+start; tapewasm starts both chains at the build's initial point.
 """
 import json, os, platform, runpy, sys, time
 
@@ -15,17 +20,15 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "models", "mmm")
 FITS, TUNE, DRAWS, CHAINS = 10, 750, 500, 2
-FREE = ["adstock_alpha", "saturation_lam", "saturation_beta", "gamma_fourier", "gamma_control",
-        "intercept_contribution", "y_sigma"]
 
 
-def min_bulk_ess(draws):  # (chain, draw, param); rank-based, so either space scores the same
+def min_bulk_ess(draws):  # (chain, draw, param), unconstrained, in the sampler's order
     from arviz_stats.base import array_stats
     return float(np.min(array_stats.ess(np.asarray(draws), chain_axis=0, draw_axis=1, method="bulk")))
 
 
 def native(nrw):
-    import nutpie, pymc, pymc_marketing
+    import arviz_stats, nutpie, pymc, pymc_marketing
     from pymcwasm.build import build
 
     ns = runpy.run_path(os.path.join(nrw, "examples/mmm/model.py"),
@@ -34,21 +37,27 @@ def native(nrw):
     for reroll in ("auto", "never"):
         build(model, os.path.join(OUT, reroll), log_lik=False, expand=False, reroll=reroll)
     compiled = nutpie.compile_pymc_model(model)
-    fits = []
-    for s in range(FITS):
-        t = time.perf_counter()
-        idata = nutpie.sample(compiled, draws=DRAWS, tune=TUNE, chains=CHAINS, cores=1, seed=s + 1,
-                              target_accept=0.9, save_warmup=True, progress_bar=False)
-        secs = time.perf_counter() - t
-        post = np.concatenate([np.asarray(idata.posterior[v]).reshape(CHAINS, DRAWS, -1) for v in FREE], 2)
-        fits.append({"seconds": secs, "evals": int(idata.warmup_sample_stats["n_steps"].sum()
-                                                   + idata.sample_stats["n_steps"].sum()),
-                     "step_size": float(idata.sample_stats["step_size"].mean()),
-                     "divergences": int(idata.sample_stats["diverging"].sum()),
-                     "min_ess": min_bulk_ess(post)})
+    runs = []
+    for adaptation in ("diag", "draw_diag"):
+        fits = []
+        for s in range(FITS):
+            t = time.perf_counter()
+            idata = nutpie.sample(compiled, draws=DRAWS, tune=TUNE, chains=CHAINS, cores=1, seed=s + 1,
+                                  target_accept=0.9, adaptation=adaptation, save_warmup=True,
+                                  store_unconstrained=True, progress_bar=False)
+            secs = time.perf_counter() - t
+            post = np.asarray(idata.sample_stats["unconstrained_draw"])
+            fits.append({"seconds": secs, "evals": int(idata.warmup_sample_stats["n_steps"].sum()
+                                                       + idata.sample_stats["n_steps"].sum()),
+                         "step_size": float(idata.sample_stats["step_size"].mean()),
+                         "divergences": int(idata.sample_stats["diverging"].sum()),
+                         "draws": post.ravel().tolist()})
+        runs.append({"adaptation": adaptation, "fits": fits})
     versions = {"python": platform.python_version(), "machine": platform.machine(), "pymc": pymc.__version__,
-                "pymc-marketing": pymc_marketing.__version__, "nutpie": nutpie.__version__}
-    json.dump({"versions": versions, "fits": fits}, open(os.path.join(OUT, "nutpie.json"), "w"))
+                "pymc-marketing": pymc_marketing.__version__, "nutpie": nutpie.__version__,
+                "arviz-stats": arviz_stats.__version__}
+    json.dump({"versions": versions, "nParams": int(post.shape[-1]), "tune": TUNE, "draws": DRAWS,
+               "chains": CHAINS, "runs": runs}, open(os.path.join(OUT, "nutpie.json"), "w"))
 
 
 def table():
@@ -56,27 +65,44 @@ def table():
 
     nat = json.load(open(os.path.join(OUT, "nutpie.json")))
     tw = json.load(open(os.path.join(OUT, "tapewasm.json")))
-    rows = [("CPython · nutpie", nat["fits"])]
-    for run in tw["runs"]:
-        for f in run["fits"]:
-            f["min_ess"] = min_bulk_ess(np.asarray(f.pop("draws")).reshape(CHAINS, DRAWS, tw["nParams"]))
-        rows.append((f"V8 · tapewasm · reroll {run['reroll']} · grad-based metric "
-                     f"{'on' if run['gradBased'] else 'off'}", run["fits"]))
+    rows = []
+    for src, label in ((nat, lambda r: f"CPython · nutpie · adaptation {r['adaptation']}"),
+                       (tw, lambda r: f"V8 · tapewasm · reroll {r['reroll']} · grad-based metric "
+                                      f"{'on' if r['gradBased'] else 'off'}")):
+        shape = (src["chains"], src["draws"], src["nParams"])
+        for run in src["runs"]:
+            for f in run["fits"]:
+                f["draws"] = np.asarray(f["draws"]).reshape(shape)
+                f["min_ess"] = min_bulk_ess(f["draws"])
+            rows.append((label(run), run["fits"]))
+
+    # Every fit of nutpie's default, pooled, is what the other rows' means are measured against.
+    ref = np.concatenate([f["draws"].reshape(-1, nat["nParams"]) for f in rows[0][1]])
+    mean, sd = ref.mean(0), ref.std(0)
+
+    def gap(fits):
+        pooled = np.concatenate([f["draws"].reshape(-1, nat["nParams"]) for f in fits])
+        return float(np.max(np.abs(pooled.mean(0) - mean) / sd))
+
     med = lambda fits, f: st.median(f(x) for x in fits)
     lines = ["# nuts-rs-wasm's demo MMM", "", "Generated by `bench/mmm.py table`; see its docstring.", "",
              f"- CPython: {nat['versions']}", f"- V8: {tw['versions']}", "",
-             f"Median of {FITS} fits of {CHAINS} chains × ({TUNE} warmup + {DRAWS} draws), target_accept 0.9.",
-             "", "| sampler | sample s | gradient evals | step size | min bulk ESS | ESS/s | µs per eval | divergences |",
-             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+             f"Median of {FITS} fits of {CHAINS} chains × ({TUNE} warmup + {DRAWS} draws), target_accept 0.9. "
+             "The last column is the worst distance of a row's pooled posterior means from nutpie's default, "
+             "in nutpie's sd, over the unconstrained parameters.",
+             "", "| sampler | sample s | gradient evals | step size | min bulk ESS | ESS/s | µs per eval "
+             "| divergences | means vs nutpie |",
+             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for name, fits in rows:
         lines.append(
             f"| {name} | {med(fits, lambda x: x['seconds']):.2f} | {med(fits, lambda x: x['evals']):,.0f} "
             f"| {med(fits, lambda x: x['step_size']):.3f} | {med(fits, lambda x: x['min_ess']):.0f} "
             f"| {med(fits, lambda x: x['min_ess'] / x['seconds']):.1f} "
-            f"| {med(fits, lambda x: x['seconds'] / x['evals'] * 1e6):.1f} | {sum(x['divergences'] for x in fits)} |")
+            f"| {med(fits, lambda x: x['seconds'] / x['evals'] * 1e6):.1f} "
+            f"| {sum(x['divergences'] for x in fits)} | {gap(fits):.2f} sd |")
     open(os.path.join(HERE, "RESULTS-mmm.md"), "w").write("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 
 if __name__ == "__main__":
-    native(sys.argv[2]) if sys.argv[1] == "native" else table()
+    {"native": lambda: native(sys.argv[2]), "table": table}[sys.argv[1]]()
