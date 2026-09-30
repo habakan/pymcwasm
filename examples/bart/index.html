@@ -6,7 +6,7 @@
   :root { --ink:#1f2933; --dim:#62707c; --line:#dde2e7; --accent:#1f6f5c; --band:#cfe3dc;
           --ref:#c0392b; --tree:#c9622a; --fresh:#f3c9a8; }
   body { font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
-         margin: 0 auto; padding: 1rem 16px; max-width: 60rem; }
+         margin: 0 auto; padding: 1rem 16px; max-width: 76rem; }
   h1 { font-size: 1.05rem; margin: .4rem 0; }
   h2 { font-size: .9rem; margin: 1rem 0 .3rem; }
   a.home { color: var(--dim); font-size: 12px; text-decoration: none; }
@@ -24,16 +24,17 @@
   svg text { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--ink); }
   .legend { display: flex; flex-wrap: wrap; gap: .3rem 1rem; font-size: 11px; color: var(--dim); margin-top: .3rem; }
 
-  #forest { display: grid; grid-template-columns: repeat(auto-fill, minmax(26px, 1fr)); gap: 3px; }
-  #forest button { padding: 0; height: 30px; border: 1px solid var(--line); background: #fff;
-                   color: var(--ink); font-size: 10px; border-radius: 3px; position: relative;
-                   display: flex; align-items: flex-end; justify-content: center; overflow: hidden; }
-  #forest button .fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--band); }
-  #forest button span { position: relative; }
+  .main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1rem; align-items: start; }
+  .main h2:first-child { margin-top: 0; }
+  @media (max-width: 800px) { .main { grid-template-columns: 1fr; } }
+
+  #forest { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+  #forest button { padding: 0; border: 1px solid var(--line); background: #fff; color: var(--dim);
+                   font-size: 10px; border-radius: 4px; position: relative; }
+  #forest button svg { border: 0; border-radius: 0; }
+  #forest button span { position: absolute; left: 4px; top: 1px; }
   #forest button.fresh { background: var(--fresh); }
   #forest button.sel { outline: 2px solid var(--tree); outline-offset: -1px; }
-  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  @media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
 </style>
 
 <a class="home" href="../../">&larr; pymcwasm</a>
@@ -53,29 +54,29 @@
   <button id="run">sample</button>
   <span id="status">not loaded</span>
 </div>
-<svg id="plot" viewBox="0 0 640 300" role="img" aria-label="data and mu"></svg>
-<div class="legend">
-  <span style="color:var(--accent)">&#9644; mu at the current draw; after sampling, its posterior mean and 90% band</span>
-  <span style="color:var(--ref)">- - sin(x)</span>
-  <span>&#9679; data</span>
+<div class="main">
+  <div>
+    <svg id="plot" viewBox="0 0 640 400" role="img" aria-label="data and mu"></svg>
+    <div class="legend">
+      <span style="color:var(--accent)">&#9644; mu at the current draw; after sampling, its posterior mean and 90% band</span>
+      <span style="color:var(--ref)">- - sin(x)</span>
+      <span>&#9679; data</span>
+    </div>
+  </div>
+  <div>
+    <h2 id="treeTitle">tree 0</h2>
+    <svg id="tree" viewBox="0 0 320 200" role="img" aria-label="the selected tree"></svg>
+    <h2>what it adds to mu</h2>
+    <svg id="steps" viewBox="0 0 320 130" role="img" aria-label="the selected tree's step function"></svg>
+  </div>
 </div>
 
 <h2>The trees</h2>
 <p class="desc">
   mu is the sum of these trees. Each step regrows a tenth of them; the ones regrown since the
-  last frame are shaded. The bar in each cell is its depth. Pick one to follow it.
+  last frame are shaded. Pick one to follow it beside the chart.
 </p>
 <div id="forest"></div>
-<div class="pair">
-  <div>
-    <h2 id="treeTitle">tree 0</h2>
-    <svg id="tree" viewBox="0 0 320 220" role="img" aria-label="the selected tree"></svg>
-  </div>
-  <div>
-    <h2>what it adds to mu</h2>
-    <svg id="steps" viewBox="0 0 320 220" role="img" aria-label="the selected tree's step function"></svg>
-  </div>
-</div>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -116,22 +117,21 @@ function predict(t, x) {
   while (i < t.var.length && t.var[i] !== LEAF) i = x <= t.val[i] ? 2 * i + 1 : 2 * i + 2;
   return t.leaf[i];
 }
-function depth(t, i = 0) {
-  return i < t.var.length && t.var[i] !== LEAF ? 1 + Math.max(depth(t, 2 * i + 1), depth(t, 2 * i + 2)) : 0;
-}
 const same = (a, b) => a && b && a.var.join() === b.var.join() && a.val.join() === b.val.join();
 
 function showForest(next) {
   trees = next;
   const box = $("forest");
   if (box.children.length !== trees.length) {
-    box.innerHTML = trees.map((_, k) => `<button data-k="${k}"><div class="fill"></div><span>${k}</span></button>`).join("");
+    box.innerHTML = trees.map((_, k) => `<button data-k="${k}"><svg viewBox="0 0 84 60"></svg><span>${k}</span></button>`).join("");
     for (const b of box.children) b.onclick = () => { selected = +b.dataset.k; showSelected(); };
+    prev = [];
   }
   trees.forEach((t, k) => {
     const b = box.children[k];
-    b.querySelector(".fill").style.height = `${Math.min(depth(t), 6) / 6 * 100}%`;
-    b.classList.toggle("fresh", prev.length > 0 && !same(t, prev[k]));
+    const changed = !same(t, prev[k]);
+    if (changed) b.querySelector("svg").innerHTML = miniTree(t);
+    b.classList.toggle("fresh", prev.length > 0 && changed);
   });
   prev = trees;
   showSelected();
@@ -146,7 +146,7 @@ function showSelected() {
 const fmt = (v) => (Math.abs(v) < 0.01 ? v.toExponential(1) : v.toFixed(2));
 
 // Leaves take consecutive columns in order; a split sits over the middle of its children.
-function drawTree(t) {
+function layout(t, W, H, pad, top, bottom) {
   const nodes = [];
   let col = 0;
   (function place(i, d) {
@@ -158,13 +158,26 @@ function drawTree(t) {
     }
     return nodes[nodes.length - 1];
   })(0, 0);
-  const W = 320, H = 220, maxD = Math.max(...nodes.map((n) => n.d), 1);
-  const X = (n) => 20 + (col > 1 ? (n.c / (col - 1)) * (W - 40) : (W - 40) / 2);
-  const Y = (n) => 22 + (n.d / maxD) * (H - 50);
-  let svg = "";
-  for (const n of nodes) if (n.split) for (const k of n.kids) {
-    svg += `<line x1="${X(n)}" y1="${Y(n)}" x2="${X(k)}" y2="${Y(k)}" stroke="var(--line)"/>`;
+  const maxD = Math.max(...nodes.map((n) => n.d), 1);
+  for (const n of nodes) {
+    n.x = pad + (col > 1 ? (n.c / (col - 1)) * (W - 2 * pad) : (W - 2 * pad) / 2);
+    n.y = top + (n.d / maxD) * (H - top - bottom);
   }
+  const edges = nodes.filter((n) => n.split).flatMap((n) => n.kids.map((k) =>
+    `<line x1="${n.x}" y1="${n.y}" x2="${k.x}" y2="${k.y}" stroke="var(--line)"/>`)).join("");
+  return { nodes, col, edges };
+}
+
+function miniTree(t) {
+  const { nodes, edges } = layout(t, 84, 60, 8, 14, 6);
+  return edges.replaceAll("var(--line)", "var(--dim)") + nodes.map((n) =>
+    `<circle cx="${n.x}" cy="${n.y}" r="${n.split ? 1.6 : 2.2}" fill="${n.split ? "var(--dim)" : "var(--tree)"}"/>`).join("");
+}
+
+function drawTree(t) {
+  const { nodes, col, edges } = layout(t, 320, 200, 32, 22, 28);
+  const X = (n) => n.x, Y = (n) => n.y;
+  let svg = edges;
   for (const n of nodes) {
     svg += n.split
       ? `<text x="${X(n)}" y="${Y(n) + 3}" text-anchor="middle" style="fill:var(--ink)">x≤${t.val[n.i].toFixed(2)}</text>`
@@ -175,7 +188,7 @@ function drawTree(t) {
 }
 
 function drawSteps(t) {
-  const W = 320, H = 220, P = 24, xs = [];
+  const W = 320, H = 130, P = 16, xs = [];
   for (let k = 0; k <= 400; k++) xs.push((k / 400) * 10);
   const vs = xs.map((x) => predict(t, x));
   const lim = Math.max(1e-9, ...vs.map(Math.abs));
@@ -189,7 +202,7 @@ function drawSteps(t) {
 function plot(line, band) {
   if (!data) return;
   const { x, y } = data;
-  const W = 640, H = 300, P = 28;
+  const W = 640, H = 400, P = 28;
   const ys = [...y, ...(band ? [...band.lo, ...band.hi] : [])];
   const y0 = Math.min(...ys), y1 = Math.max(...ys);
   const sx = (v) => P + (v / 10) * (W - 2 * P);
