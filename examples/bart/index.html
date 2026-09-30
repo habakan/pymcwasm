@@ -58,10 +58,12 @@
     .side #steps { flex: none; height: 130px; }
     #forest { max-height: none; }
   }
+  nav.links { color: var(--dim); font-size: 12px; flex: none; }
+  nav.links a[href^="https://github.com"] { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 </style>
 
 <header>
-  <a class="home" href="../../">&larr; pymcwasm</a>
+  <nav class="links"><a class="home" href="../../">&larr; pymcwasm</a> · <a class="home" href="https://github.com/habakan/pymcwasm">GitHub</a> · <a class="home" href="https://github.com/habakan/pymcwasm/tree/main/examples/bart">this page's source</a></nav>
   <h1>BART in the page</h1>
   <p class="desc">
     <code>y ~ Normal(mu, sigma)</code>, <code>mu = BART(x)</code>, <code>sigma ~ HalfNormal(1)</code>, data
