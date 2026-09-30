@@ -42,6 +42,9 @@ jobs:
       - name: build the JupyterLite notebook
         run: bash examples/jupyterlite/build.sh
 
+      - name: build bartrs for Pyodide, for the BART example
+        run: bash examples/bart/build-wheel.sh
+
       # `serve.mjs` maps two paths that do not exist on disk. A static host has
       # no such mapping, so they become real directories here.
       - name: lay the site out the way serve.mjs serves it
