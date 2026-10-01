@@ -63,7 +63,8 @@ def check(build):
     """Worst relative error of the module's density, gradient and log-likelihood terms."""
     model = build()
     rng = np.random.default_rng(11)
-    ip = model.initial_point()
+    # An ordered transform of equal initial values is log(0); both sides are -inf there.
+    ip = {k: np.where(np.isfinite(v), v, 0.0) for k, v in model.initial_point().items()}
     trace_at, test_at = jitter(ip, rng, 0.3), jitter(ip, rng, 0.7)
     with tempfile.TemporaryDirectory() as d:
         tape = os.path.join(d, "model.tape")

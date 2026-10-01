@@ -178,8 +178,31 @@ def test_a_max_reduction_follows_the_largest_element(tmp_path):
     assert got == pytest.approx(want, rel=1e-12)
 
 
+def test_an_ordered_transform_lowers(tmp_path):
+    # Its backward pass fills an AllocEmpty with set_subtensor.
+    with pm.Model() as m:
+        pm.Normal("mu", 0, 1, shape=3, transform=pm.distributions.transforms.ordered)
+    trace_at = {"mu_ordered__": np.array([-0.4, 0.2, -0.1])}
+    test_at = {"mu_ordered__": np.array([0.3, -0.5, 0.7])}
+    got, want = lp_at(m, tmp_path, trace_at, test_at)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
 def test_a_discrete_parameter_is_refused_by_name(tmp_path):
     with pm.Model() as m:
         pm.Bernoulli("z", 0.5, shape=2)
     with pytest.raises(NotImplementedError, match=r"discrete parameters \(z\)"):
         lower(m, str(tmp_path / "m.tape"))
+
+
+def test_a_constant_needed_before_any_op_lowers(tmp_path):
+    # set_subtensor of a raw parameter into an empty buffer: the buffer's other rows are
+    # constants, and nothing has been computed before them.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        x = pm.Normal("x", 0, 1)
+        buf = pt.set_subtensor(pt.empty((3,))[:1], x)
+        pm.Normal("y", buf[0] + buf[1:].sum(), 1, observed=[0.4])
+    got, want = lp_at(m, tmp_path, {"x": np.array(0.3)}, {"x": np.array(-0.8)})
+    assert got == pytest.approx(want, rel=1e-12)
