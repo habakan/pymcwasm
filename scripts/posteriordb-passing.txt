@@ -16,6 +16,7 @@ low_dim_gauss_mix-low_dim_gauss_mix
 low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse
 lsat_data-lsat_model
 M0_data-M0_model
+mcycle_splines-accel_splines
 mesquite-logmesquite_logvas
 mesquite-logmesquite_logvash
 mesquite-mesquite

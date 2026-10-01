@@ -38,8 +38,7 @@ parameter-dependent index rather than freezing it at the trace point.
 
 - A `Scan` with a `while` condition, or one whose step count depends on a parameter;
   a fixed-length `Scan` is unrolled.
-- `BetaInc`, which `accel_splines` reaches: an incomplete beta and its derivatives in every
-  argument.
+- `BetaInc` whose `a` or `b` depends on a parameter (a StudentT's cdf with `nu` free).
 - Discrete parameters.
 - A Gaussian process past a few hundred points: its `Cholesky` is unrolled, so the
   tape grows with the cube of the number of points.

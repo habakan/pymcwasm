@@ -340,6 +340,31 @@ def test_a_gaussian_process_lowers(tmp_path, name):
     assert got == pytest.approx(want, rel=1e-12)
 
 
+@pytest.mark.parametrize("trace,test", [
+    ({"mu": 0.4, "s_interval__": 0.1}, {"mu": -1.3, "s_interval__": 0.5}),  # across the switch
+    ({"mu": 0.4, "s_interval__": 0.1}, {"mu": 2.0, "s_interval__": -0.2}),
+])
+def test_a_truncated_student_t_lowers_its_incomplete_beta(tmp_path, trace, test):
+    # Its normalizer is StudentT's cdf at the bound, an incomplete beta in mu.
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        s = pm.Truncated("s", pm.StudentT.dist(nu=3, mu=mu, sigma=2.5), lower=0, upper=10)
+        pm.Normal("y", s, 1, observed=[0.5])
+    as_arrays = lambda p: {k: np.asarray(v, dtype=float) for k, v in p.items()}
+    got, want = lp_at(m, tmp_path, as_arrays(trace), as_arrays(test))
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_censored_student_t_lowers_an_incomplete_beta_per_observation(tmp_path):
+    # Each censored observation's logcdf is an incomplete beta in mu, on either side of the switch.
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        pm.Censored("y", pm.StudentT.dist(nu=[3, 5, 3], mu=mu, sigma=1.5), lower=-1.0, upper=2.0,
+                    observed=[-1.0, 2.0, -1.0])
+    got, want = lp_at(m, tmp_path, {"mu": np.array(0.3)}, {"mu": np.array(-2.4)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
 @pytest.mark.parametrize("trace,test", [(-0.5, 0.5), (0.5, -0.5)])
 def test_an_equality_on_a_clipped_rate_branches_where_it_is_evaluated(tmp_path, trace, test):
     # Poisson's eq(rate, 0) holds for every f < 0 here, not on a point.
@@ -360,4 +385,14 @@ def test_a_clip_with_its_bounds_crossed_gives_the_lower_one(tmp_path):
         pm.Normal("y", pt.clip(0.0, lo, hi), 1, observed=[0.5])
     got, want = lp_at(m, tmp_path, {"lo": np.array(-0.3), "hi": np.array(0.4)},
                       {"lo": np.array(0.8), "hi": np.array(-0.5)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("bounds", [{"lower": 0}, {"upper": 10}, {"lower": 1, "upper": 8}])
+def test_a_truncated_binomial_lowers_the_incomplete_beta_its_switch_discards(tmp_path, bounds):
+    # Binomial's logcdf builds betainc(n - value, value + 1, 1 - p) at value = n too.
+    with pm.Model() as m:
+        p = pm.Beta("p", 2, 2)
+        pm.Truncated("y", pm.Binomial.dist(10, p), **bounds, observed=[3, 5, 7])
+    got, want = lp_at(m, tmp_path, {"p_logodds__": np.array(0.2)}, {"p_logodds__": np.array(-0.9)})
     assert got == pytest.approx(want, rel=1e-12)
