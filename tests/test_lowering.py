@@ -126,3 +126,27 @@ def test_the_expansion_is_each_variable_in_its_own_space_then_the_deterministics
             vals.append(_apply(f[0], f[1:], vals))
     s = np.exp(0.4)
     np.testing.assert_allclose([vals[i] for i in outputs], [0.3, -0.7, s, 0.3 * s, -0.7 * s])
+
+
+def test_an_ordered_transform_lowers(tmp_path):
+    # Its backward pass fills an AllocEmpty with set_subtensor.
+    with pm.Model() as m:
+        pm.Normal("mu", 0, 1, shape=3, transform=pm.distributions.transforms.ordered)
+    trace_at = {"mu_ordered__": np.array([-0.4, 0.2, -0.1])}
+    test_at = {"mu_ordered__": np.array([0.3, -0.5, 0.7])}
+    got, want = lp_at(m, tmp_path, trace_at, test_at)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_constant_needed_before_any_op_lowers(tmp_path):
+    # set_subtensor of a raw parameter into an empty buffer: the buffer's other rows are
+    # constants, and nothing has been computed before them. Only the row set is read, as
+    # PyMC's own logp would read uninitialized memory in the others.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        x = pm.Normal("x", 0, 1)
+        buf = pt.set_subtensor(pt.empty((3,))[:1], x)
+        pm.Normal("y", buf[0], 1, observed=[0.4])
+    got, want = lp_at(m, tmp_path, {"x": np.array(0.3)}, {"x": np.array(-0.8)})
+    assert got == pytest.approx(want, rel=1e-12)
