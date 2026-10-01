@@ -328,9 +328,11 @@ examples/pyodide/  the in-page path
   through a `pick` is right where the branch not taken has finite partials; PyTensor's
   switch rewrites also cover infinite ones.
 - **Discrete parameters are refused by name**: NUTS samples continuous ones only.
-- **A Gaussian process is untried.** Its `Cholesky` is of a covariance built from
-  the parameters, so it lowers to a cubic number of tape nodes in the number of
-  points. Nothing is known to be wrong with it.
+- **A Gaussian process grows with the cube of its points.** `gp.Marginal` and
+  `gp.Latent` lower, their `Cholesky` unrolled over the covariance, so the module
+  and an evaluation grow as n³: in V8, 0.5 MB and 0.2 ms at 60 points, 5.3 MB and
+  10 ms at 200. Past about 50 points only `reroll="auto"` (the default) compiles:
+  V8 refuses a function over 7.6 MB. `gp.HSGP` grows with its basis instead.
 - **The starting point has to be searched for.** nuts-rs refuses a start whose
   gradient has a zero component, and PyMC's `initial_point()` is zeros — at which
   a centred hierarchical model has an exactly zero gradient in its population

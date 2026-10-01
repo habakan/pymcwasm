@@ -271,6 +271,8 @@ class Lowerer:
             return self.select(ins[0], ins[1], ins[2])
         if name in ("Maximum", "Minimum"):
             return self.select(self.scalar_op("GE" if name == "Maximum" else "LE", ins), ins[0], ins[1])
+        if name == "Clip":  # a covariance's squared distance, clipped at 0
+            return self.scalar_op("Minimum", [self.scalar_op("Maximum", ins[:2]), ins[2]])
         if name in COMPARISON:
             # Folded to what it is at the trace point: in a logp a bounds check, constant
             # after the transforms (`value < 0` guards HalfFlat). A guard list records it,
@@ -942,7 +944,8 @@ def _orders_parameters(var, tainted):
                  else {op_name(scalar)})
         if names & ORDERING and any(i in tainted for i in v.owner.inputs):
             return True
-        todo.extend(v.owner.inputs)
+        if not names & {"EQ", "NEQ"}:  # past an equality are values, not conditions
+            todo.extend(v.owner.inputs)
     return False
 
 
