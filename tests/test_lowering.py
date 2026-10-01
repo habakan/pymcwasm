@@ -280,6 +280,17 @@ def test_a_switch_on_a_reduced_comparison_is_refused(tmp_path):
         lower(m, str(tmp_path / "m.tape"))
 
 
+def test_an_equality_on_a_reduced_comparison_is_refused(tmp_path):
+    # An equality stops the search for an ordering, but not one that compares a condition.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a = pm.Normal("a", 0, 1)
+        pm.Potential("p", pt.switch(pt.eq(pt.all(a > pt.as_tensor([0.0, 0.5])), 1), a, -a))
+    with pytest.raises(NotImplementedError, match="keeps no record"):
+        lower(m, str(tmp_path / "m.tape"))
+
+
 def test_a_branch_infinite_in_some_elements_is_not_a_bounds_check(tmp_path):
     import pytensor.tensor as pt
 
