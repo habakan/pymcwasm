@@ -95,10 +95,11 @@ class TapeWriter:
     def const_node(self, v):
         """A constant that has to reach the tape as a node.
 
-        A leaf recorded after the first non-leaf op is a constant, not a
-        parameter, so this must never run before one exists.
+        A leaf recorded before the first non-leaf op would be taken for a parameter,
+        so a graph that needs a constant first gets an op ahead of it.
         """
-        assert any(not l.startswith("new_var") for l in self.lines), "constant before any op"
+        if all(l.startswith("new_var") for l in self.lines):
+            self.emit("mul_c", 0, "0.0")
         return self.emit("new_var", repr(float(v)))
 
 
@@ -742,11 +743,16 @@ def _concat(op, node, ins, cx):
 def _eval_float(var):
     """A constant subgraph's value, computed in float64 where it is integer arithmetic.
 
+    An `AllocEmpty` is zeros: evaluated, it is whatever memory it got.
+
     `StudentT(nu=3, sigma=10)` scales by an int8 `nu * sigma**2`, which wraps to 44 on
     its own; PyMC's compiled logp upcasts first and gets 300. An index cannot be a
     float, so that one keeps its integer evaluation.
     """
     import pytensor.tensor as pt
+
+    if var.owner is not None and op_name(var.owner.op) == "AllocEmpty":
+        return np.zeros(tuple(int(np.asarray(i.eval()).item()) for i in var.owner.inputs))
 
     def rebuild(v, memo):
         if v not in memo:
