@@ -327,3 +327,18 @@ def test_a_gaussian_process_lowers(tmp_path, name):
     test_at = {k: v + 0.3 * rng.normal(size=np.shape(v)) for k, v in trace_at.items()}
     got, want = lp_at(m, tmp_path, trace_at, test_at)
     assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("trace,test", [
+    ({"mu": 0.4, "s_interval__": 0.1}, {"mu": -1.3, "s_interval__": 0.5}),  # across the switch
+    ({"mu": 0.4, "s_interval__": 0.1}, {"mu": 2.0, "s_interval__": -0.2}),
+])
+def test_a_truncated_student_t_lowers_its_incomplete_beta(tmp_path, trace, test):
+    # Its normalizer is StudentT's cdf at the bound, an incomplete beta in mu.
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        s = pm.Truncated("s", pm.StudentT.dist(nu=3, mu=mu, sigma=2.5), lower=0, upper=10)
+        pm.Normal("y", s, 1, observed=[0.5])
+    as_arrays = lambda p: {k: np.asarray(v, dtype=float) for k, v in p.items()}
+    got, want = lp_at(m, tmp_path, as_arrays(trace), as_arrays(test))
+    assert got == pytest.approx(want, rel=1e-12)

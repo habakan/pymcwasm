@@ -17,6 +17,7 @@ fixed step count. A `Switch` on an ordering of parameters becomes tapewasm's `pi
 """
 
 import functools
+import math
 import os
 import subprocess
 import sys
@@ -303,9 +304,45 @@ class Lowerer:
         if name == "Log1mexp":
             inner = self.unary("Exp", ins[0])
             return self.unary("Log", self.binary("Sub", ("c", np.array(1.0)), inner))
+        if name == "BetaInc":
+            return self.betainc(*ins)
         if name == "Erf":
             raise NotImplementedError("Erf has no emitter arm")
         raise NotImplementedError(f"scalar op {name}")
+
+    def betainc(self, a, b, x):
+        """I_x(a, b) for constant a and b, as a StudentT's cdf has: Numerical Recipes' continued
+        fraction, unrolled as far as it takes to converge where it converges slowest."""
+        if is_tape(a) or is_tape(b):
+            raise NotImplementedError("BetaInc whose a or b depends on a parameter")
+        if not is_tape(x):
+            from scipy.special import betainc
+            return ("c", betainc(a[1], b[1], x[1]))
+        a, b = float(np.asarray(a[1]).item()), float(np.asarray(b[1]).item())
+        if np.ndim(x[1]):
+            raise NotImplementedError("BetaInc over an array")
+        at = (a + 1) / (a + b + 2)
+        direct = self.betacf(a, b, x, _cf_terms(a, b, at))
+        x1 = self.binary("Sub", ("c", np.array(1.0)), x)
+        mirrored = self.binary("Sub", ("c", np.array(1.0)), self.betacf(b, a, x1, _cf_terms(b, a, 1 - at)))
+        return self.select(self.scalar_op("LT", [x, ("c", np.array(at))]), direct, mirrored)
+
+    def betacf(self, a, b, x, terms):
+        c = one = ("c", np.array(1.0))
+        d = self.binary("TrueDiv", one, self.binary("Sub", one, self.binary("Mul", ("c", np.array((a + b) / (a + 1))), x)))
+        h = d
+        for k in (k for m in range(1, terms + 1) for k in _cf_pair(a, b, m)):
+            # d = 1/(1 + k x d), c = 1 + k x / c, h *= d c
+            kx = self.binary("Mul", ("c", np.array(k)), x)
+            d = self.binary("TrueDiv", one, self.binary("Add", one, self.binary("Mul", kx, d)))
+            c = self.binary("Add", one, self.binary("TrueDiv", kx, c))
+            h = self.binary("Mul", h, self.binary("Mul", d, c))
+        log_front = self.binary("Add", self.binary("Mul", ("c", np.array(a)), self.unary("Log", x)),
+                                self.binary("Mul", ("c", np.array(b)),
+                                            self.unary("Log", self.binary("Sub", one, x))))
+        lbeta = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+        front = self.unary("Exp", self.binary("Sub", log_front, ("c", np.array(lbeta + math.log(a)))))
+        return self.binary("Mul", front, h)
 
     def select(self, cond, a, b):
         # A bounds check — one side a constant infinity — holds everywhere the
@@ -925,6 +962,27 @@ def _concat(op, node, ins, cx):
     arrs = [np.atleast_1d(np.asarray(x[1], dtype=object) if is_tape(x) else node(np.asarray(x[1])))
             for x in ins]
     return ("t", np.concatenate(arrs, axis=axis))
+
+
+def _cf_pair(a, b, m):
+    """The continued fraction's m-th two numerators, over x."""
+    return (m * (b - m) / ((a + 2 * m - 1) * (a + 2 * m)),
+            -(a + m) * (a + b + m) / ((a + 2 * m) * (a + 2 * m + 1)))
+
+
+@functools.cache
+def _cf_terms(a, b, x):
+    """Terms until the fraction stops changing at x, plus a margin."""
+    d = 1 / (1 - (a + b) * x / (a + 1))
+    c, h = 1.0, d
+    for m in range(1, 10_000):
+        for k in _cf_pair(a, b, m):
+            d = 1 / (1 + k * x * d)
+            c = 1 + k * x / c
+            h *= d * c
+        if abs(d * c - 1) < 1e-16:
+            return m + 5
+    raise NotImplementedError(f"BetaInc({a}, {b}) does not converge")
 
 
 ORDERING = {"GT", "GE", "LT", "LE", "Maximum", "Minimum"}
