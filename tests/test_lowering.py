@@ -353,3 +353,13 @@ def test_a_truncated_student_t_lowers_its_incomplete_beta(tmp_path, trace, test)
     as_arrays = lambda p: {k: np.asarray(v, dtype=float) for k, v in p.items()}
     got, want = lp_at(m, tmp_path, as_arrays(trace), as_arrays(test))
     assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_censored_student_t_lowers_an_incomplete_beta_per_observation(tmp_path):
+    # Each censored observation's logcdf is an incomplete beta in mu, on either side of the switch.
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        pm.Censored("y", pm.StudentT.dist(nu=[3, 5, 3], mu=mu, sigma=1.5), lower=-1.0, upper=2.0,
+                    observed=[-1.0, 2.0, -1.0])
+    got, want = lp_at(m, tmp_path, {"mu": np.array(0.3)}, {"mu": np.array(-2.4)})
+    assert got == pytest.approx(want, rel=1e-12)

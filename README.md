@@ -332,7 +332,7 @@ examples/pyodide/  the in-page path
 - **A Gaussian process grows with the cube of its points.** `gp.Marginal` and
   `gp.Latent` lower, their `Cholesky` unrolled over the covariance, so the module
   and an evaluation grow as n³: in V8, 0.5 MB and 0.2 ms at 60 points, 5.3 MB and
-  10 ms at 200. Past about 50 points only `reroll="auto"` (the default) compiles:
+  10 ms at 200. From 60 points only `reroll="auto"` (the default) compiles:
   V8 refuses a function over 7.6 MB. `gp.HSGP` grows with its basis instead.
 - **The starting point has to be searched for.** nuts-rs refuses a start whose
   gradient has a zero component, and PyMC's `initial_point()` is zeros — at which

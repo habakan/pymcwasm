@@ -318,9 +318,13 @@ class Lowerer:
         if not is_tape(x):
             from scipy.special import betainc
             return ("c", betainc(a[1], b[1], x[1]))
-        a, b = float(np.asarray(a[1]).item()), float(np.asarray(b[1]).item())
-        if np.ndim(x[1]):
-            raise NotImplementedError("BetaInc over an array")
+        aa, bb, xx = np.broadcast_arrays(np.asarray(a[1], dtype=float), np.asarray(b[1], dtype=float), x[1])
+        if xx.ndim:  # one fraction per element, its terms fixed by that element's a and b
+            out = np.empty(xx.shape, dtype=object)
+            for k in np.ndindex(xx.shape):
+                out[k] = self.betainc(("c", aa[k]), ("c", bb[k]), ("t", np.array(xx[k])))[1]
+            return ("t", out)
+        a, b = float(aa), float(bb)
         at = (a + 1) / (a + b + 2)
         direct = self.betacf(a, b, x, _cf_terms(a, b, at))
         x1 = self.binary("Sub", ("c", np.array(1.0)), x)
