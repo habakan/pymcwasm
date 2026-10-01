@@ -280,6 +280,17 @@ def test_a_switch_on_a_reduced_comparison_is_refused(tmp_path):
         lower(m, str(tmp_path / "m.tape"))
 
 
+def test_an_equality_on_a_reduced_comparison_is_refused(tmp_path):
+    # An equality stops the search for an ordering, but not one that compares a condition.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a = pm.Normal("a", 0, 1)
+        pm.Potential("p", pt.switch(pt.eq(pt.all(a > pt.as_tensor([0.0, 0.5])), 1), a, -a))
+    with pytest.raises(NotImplementedError, match="keeps no record"):
+        lower(m, str(tmp_path / "m.tape"))
+
+
 def test_a_branch_infinite_in_some_elements_is_not_a_bounds_check(tmp_path):
     import pytensor.tensor as pt
 
@@ -302,4 +313,51 @@ def test_a_switch_on_a_scan_state_branches_where_it_is_evaluated(tmp_path):
         pm.Normal("y", out, 1, observed=np.linspace(0, 1, 6))
     got, want = lp_at(m, tmp_path, {"a": np.array(0.2), "x": np.array(0.5)},
                       {"a": np.array(0.9), "x": np.array(-0.3)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def _gp_models():
+    X = np.linspace(0, 10, 12)[:, None]
+    with pm.Model() as marginal:
+        ls, eta, s = pm.Gamma("ls", 2, 1), pm.HalfNormal("eta", 1), pm.HalfNormal("s", 1)
+        gp = pm.gp.Marginal(cov_func=eta**2 * pm.gp.cov.ExpQuad(1, ls))
+        gp.marginal_likelihood("y", X, np.sin(X).ravel(), sigma=s)
+    with pm.Model() as latent:
+        ls, eta = pm.Gamma("ls", 2, 1), pm.HalfNormal("eta", 1)
+        f = pm.gp.Latent(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls)).prior("f", X)
+        pm.Poisson("c", pm.math.exp(f), observed=np.arange(12) % 4)
+    return {"marginal": marginal, "latent": latent}
+
+
+@pytest.mark.parametrize("name", ["marginal", "latent"])
+def test_a_gaussian_process_lowers(tmp_path, name):
+    # The covariance clips its squared distance at 0, and the Cholesky is of parameters.
+    m = _gp_models()[name]
+    trace_at = m.initial_point()
+    rng = np.random.default_rng(0)
+    test_at = {k: v + 0.3 * rng.normal(size=np.shape(v)) for k, v in trace_at.items()}
+    got, want = lp_at(m, tmp_path, trace_at, test_at)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("trace,test", [(-0.5, 0.5), (0.5, -0.5)])
+def test_an_equality_on_a_clipped_rate_branches_where_it_is_evaluated(tmp_path, trace, test):
+    # Poisson's eq(rate, 0) holds for every f < 0 here, not on a point.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        f = pm.Normal("f", 0, 1)
+        pm.Poisson("y", pt.clip(f, 0, np.inf), observed=[0, 0])
+    got, want = lp_at(m, tmp_path, {"f": np.array(trace)}, {"f": np.array(test)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_clip_with_its_bounds_crossed_gives_the_lower_one(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        lo, hi = pm.Normal("lo", 0, 1), pm.Normal("hi", 0, 1)
+        pm.Normal("y", pt.clip(0.0, lo, hi), 1, observed=[0.5])
+    got, want = lp_at(m, tmp_path, {"lo": np.array(-0.3), "hi": np.array(0.4)},
+                      {"lo": np.array(0.8), "hi": np.array(-0.5)})
     assert got == pytest.approx(want, rel=1e-12)

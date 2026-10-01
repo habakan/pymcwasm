@@ -245,6 +245,9 @@ class Lowerer:
             acc = ins[0]
             for nxt in ins[1:]:
                 acc = self.binary(name, acc, nxt)
+            if name == "Mul" and not is_tape(acc) and any(
+                    not is_tape(x) and id(np.asarray(x[1])) in self.recipes for x in ins):
+                self.recipes[id(acc[1])] = (acc[1], "AND", ins)  # eq(mu, 0) * eq(y, 0)
             return acc
         if name in UNARY and len(ins) == 1:
             return self.unary(name, ins[0])
@@ -271,6 +274,10 @@ class Lowerer:
             return self.select(ins[0], ins[1], ins[2])
         if name in ("Maximum", "Minimum"):
             return self.select(self.scalar_op("GE" if name == "Maximum" else "LE", ins), ins[0], ins[1])
+        if name == "Clip":  # lo below lo, else hi above hi, as PyTensor's when lo > hi
+            x, lo, hi = ins
+            return self.select(self.scalar_op("LT", [x, lo]), lo,
+                               self.select(self.scalar_op("GT", [x, hi]), hi, x))
         if name in COMPARISON:
             # Folded to what it is at the trace point: in a logp a bounds check, constant
             # after the transforms (`value < 0` guards HalfFlat). A guard list records it,
@@ -305,12 +312,12 @@ class Lowerer:
             raise NotImplementedError("Erf has no emitter arm")
         raise NotImplementedError(f"scalar op {name}")
 
-    def select(self, cond, a, b):
+    def select(self, cond, a, b, orders=False):
         # A bounds check — one side a constant infinity — holds everywhere the
         # transforms reach, so it folds at the trace point as it always has.
         # So does a test for equality: a parameter meets it on a set of measure zero.
         bounds = self.bounds(a, b)
-        if self.branch_on_tape and not bounds and (is_tape(cond) or self.ordering(cond)):
+        if self.branch_on_tape and not bounds and (is_tape(cond) or orders or self.ordering(cond)):
             c = (self.compare_on_tape("NEQ", cond, ("c", np.array(0.0))) if is_tape(cond)
                  else self.materialize(cond))
             return self.branch(c, a, b)
@@ -662,7 +669,9 @@ def _max_min(op, node, ins, cx):
 def _elemwise(op, node, ins, cx):
     inner = op.scalar_op
     if op_name(inner) == "Switch":
-        cx.low.check_condition(_orders_parameters(node.inputs[0], cx.tainted), *ins)
+        orders = _orders_parameters(node.inputs[0], cx.tainted)
+        cx.low.check_condition(orders, *ins)
+        return cx.low.select(*ins, orders=orders)
     if op_name(inner) != "Composite":
         return cx.low.scalar_op(op_name(inner), ins)
     # A fused run of scalar ops: lower its own graph over the same inputs.
@@ -673,7 +682,10 @@ def _elemwise(op, node, ins, cx):
     for n in inner.fgraph.toposort():
         args = [vals[i] if i in vals else ("c", np.asarray(i.data, dtype=float)) for i in n.inputs]
         if op_name(n.op) == "Switch" and n.inputs[0] in outer:
-            cx.low.check_condition(_orders_parameters(outer[n.inputs[0]], cx.tainted), *args)
+            orders = _orders_parameters(outer[n.inputs[0]], cx.tainted)
+            cx.low.check_condition(orders, *args)
+            vals[n.outputs[0]] = cx.low.select(*args, orders=orders)
+            continue
         vals[n.outputs[0]] = cx.low.scalar_op(op_name(n.op), args)
     return vals[inner.fgraph.outputs[0]]
 
@@ -925,12 +937,12 @@ def _concat(op, node, ins, cx):
     return ("t", np.concatenate(arrs, axis=axis))
 
 
-ORDERING = {"GT", "GE", "LT", "LE", "Maximum", "Minimum"}
+ORDERING = {"GT", "GE", "LT", "LE", "Maximum", "Minimum", "Clip"}
 
 
 def _orders_parameters(var, tainted):
-    """Whether `var` depends on a parameter through an ordering — what folding at the
-    trace point gets wrong. An equality, met on a set of measure zero, is fine to fold."""
+    """Whether `var` depends on a parameter through an ordering anywhere upstream — what
+    folding at the trace point gets wrong, even under an equality on a clipped value."""
     seen, todo = set(), [var]
     while todo:
         v = todo.pop()
@@ -942,6 +954,7 @@ def _orders_parameters(var, tainted):
                  else {op_name(scalar)})
         if names & ORDERING and any(i in tainted for i in v.owner.inputs):
             return True
+        # Past an equality too: one on a clipped value holds over a region, not a point.
         todo.extend(v.owner.inputs)
     return False
 
