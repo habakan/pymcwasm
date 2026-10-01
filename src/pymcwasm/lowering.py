@@ -327,9 +327,13 @@ class Lowerer:
         if xx.ndim:  # one fraction per element, its terms fixed by that element's a and b
             out = np.empty(xx.shape, dtype=object)
             for k in np.ndindex(xx.shape):
-                out[k] = self.betainc(("c", aa[k]), ("c", bb[k]), ("t", np.array(xx[k])))[1]
+                r = self.betainc(("c", aa[k]), ("c", bb[k]), ("t", np.array(xx[k])))
+                out[k] = r[1] if is_tape(r) else self.w.const_node(float(r[1]))
             return ("t", out)
         a, b = float(aa), float(bb)
+        if a <= 0 or b <= 0:  # the side of Binomial's logcdf a switch discards; scipy's limit
+            from scipy.special import betainc
+            return ("c", np.array(betainc(max(a, 0), max(b, 0), 0.5)))
         at = (a + 1) / (a + b + 2)
         direct = self.betacf(a, b, x, _cf_terms(a, b, at))
         x1 = self.binary("Sub", ("c", np.array(1.0)), x)

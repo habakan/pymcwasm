@@ -386,3 +386,13 @@ def test_a_clip_with_its_bounds_crossed_gives_the_lower_one(tmp_path):
     got, want = lp_at(m, tmp_path, {"lo": np.array(-0.3), "hi": np.array(0.4)},
                       {"lo": np.array(0.8), "hi": np.array(-0.5)})
     assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("bounds", [{"lower": 0}, {"upper": 10}, {"lower": 1, "upper": 8}])
+def test_a_truncated_binomial_lowers_the_incomplete_beta_its_switch_discards(tmp_path, bounds):
+    # Binomial's logcdf builds betainc(n - value, value + 1, 1 - p) at value = n too.
+    with pm.Model() as m:
+        p = pm.Beta("p", 2, 2)
+        pm.Truncated("y", pm.Binomial.dist(10, p), **bounds, observed=[3, 5, 7])
+    got, want = lp_at(m, tmp_path, {"p_logodds__": np.array(0.2)}, {"p_logodds__": np.array(-0.9)})
+    assert got == pytest.approx(want, rel=1e-12)
