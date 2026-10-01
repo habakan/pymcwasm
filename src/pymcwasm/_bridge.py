@@ -76,16 +76,20 @@ _MATH_JS = """
 """
 
 
-async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH):
-    """Turn a tape into a bound module. Returns a JS handle and what it took."""
+async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH, reroll="auto"):
+    """Turn a tape into a bound module. Returns a JS handle and what it took.
+
+    `reroll` is tapewasm's: `"auto"` suits SpiderMonkey and JavaScriptCore, and V8 runs
+    a large model's straight-line module (`"never"`) about twice as fast.
+    """
     from pyodide.code import run_js
 
     tw = await load(tapewasm_path)
     build = run_js(
         """
-        (async (tw, tape, mathSrc) => {
+        (async (tw, tape, mathSrc, reroll) => {
             const t0 = performance.now();
-            const built = tw.compileTape(tape);
+            const built = tw.compileTape(tape, reroll);
             const aot = await WebAssembly.instantiate(built.wasm, {
                 tapewasm: { memory: tw.sharedMemory() },
                 Math: eval(mathSrc),
@@ -95,7 +99,7 @@ async def compile(tape, tapewasm_path=DEFAULT_TAPEWASM_PATH):
         })
         """
     )
-    return await build(tw, tape, _MATH_JS), tw
+    return await build(tw, tape, _MATH_JS, reroll), tw
 
 
 async def evaluate(handle, tw, draws):
@@ -130,7 +134,8 @@ async def evaluate(handle, tw, draws):
     return None if got is None else got.to_py()
 
 
-async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0,
+               target_accept=None, grad_based_estimate=None, max_depth=None):
     """Sample a module compiled earlier.
 
     `setAotExports` binds one module per page, so this re-binds before every
@@ -138,17 +143,26 @@ async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
     buffers, which the layout id refuses rather than silently mixing.
 
     A tapewasm with `sampleWithStats` also returns each draw's sampler
-    statistics; an older one returns the draws alone, and `stats` is None.
+    statistics; an older one returns the draws alone, and `stats` is None. The
+    settings left None keep tapewasm's defaults.
     """
     from pyodide.code import run_js
 
     sampler = run_js(
         """
-        ((tw, h, init, warmup, draws, seed, names, chain) => {
+        ((tw, h, init, warmup, draws, seed, names, chain, target, gradBased, depth) => {
             tw.setAotExports(h.exports);
             const s = new tw.AotSampler(
                 h.built.nParams, h.built.scratchInit, h.built.layoutId, names,
             );
+            if (target != null) s.setTargetAccept(target);
+            if (gradBased != null) s.setGradBasedEstimate(gradBased);
+            if (depth != null) {
+                if (typeof s.setMaxDepth !== "function") {
+                    throw new Error("max_depth needs a tapewasm with setMaxDepth (0.3.5)");
+                }
+                s.setMaxDepth(depth);
+            }
             const t0 = performance.now();
             const args = [new Float64Array(init), warmup, draws, BigInt(seed)];
             let flat, stats = null;
@@ -169,6 +183,10 @@ async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
     return sampler(
         tw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
         int(chain),
+        # Plain Python values: a numpy bool reaches wasm as a proxy, which reads as false.
+        None if target_accept is None else float(target_accept),
+        None if grad_based_estimate is None else bool(grad_based_estimate),
+        None if max_depth is None else int(max_depth),
     ).to_py()
 
 

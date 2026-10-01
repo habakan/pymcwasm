@@ -93,7 +93,7 @@ def test_chains_are_seeded_apart_and_stacked(monkeypatch):
     names = param_names(m)
     calls = []
 
-    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0, **settings):
         calls.append((seed, chain))
         total = warmup + draws
         return {"draws": [float(chain)] * (total * len(param_names)),
@@ -137,7 +137,7 @@ def test_sample_asks_the_module_for_each_draws_terms(monkeypatch):
     names = param_names(m)
     seen = []
 
-    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0, **settings):
         total = warmup + draws
         return {"draws": [float(chain)] * (total * len(param_names)), "stats": None,
                 "ms": 1.0, "nParams": len(param_names)}
@@ -161,7 +161,7 @@ def test_an_older_tapewasm_leaves_the_group_out(monkeypatch):
     m = model()
     names = param_names(m)
 
-    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0):
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0, **settings):
         total = warmup + draws
         return {"draws": [0.0] * (total * len(param_names)), "stats": None, "ms": 1.0,
                 "nParams": len(param_names)}
@@ -176,3 +176,20 @@ def test_an_older_tapewasm_leaves_the_group_out(monkeypatch):
     f = asyncio.run(c.sample(draws=3, warmup=1))
     assert f.log_lik_draws is None
     assert "log_likelihood" not in groups(f.to_inference_data())
+
+
+def test_sample_passes_the_sampler_settings_to_every_chain(monkeypatch):
+    m = model()
+    names = param_names(m)
+    seen = []
+
+    async def fake_draw(handle, tw, init, warmup, draws, seed, param_names, chain=0, **settings):
+        seen.append(settings)
+        return {"draws": [0.0] * ((warmup + draws) * len(param_names)), "stats": None,
+                "ms": 1.0, "nParams": len(param_names)}
+
+    monkeypatch.setattr(pymcwasm._bridge, "draw", fake_draw)
+    c = Compiled(SimpleNamespace(ms=1.0, bytes=100), None, names, np.zeros(len(names)), 1.0, m)
+    asyncio.run(c.sample(draws=2, warmup=1, chains=2, target_accept=0.9, grad_based_estimate=True))
+    want = {"target_accept": 0.9, "grad_based_estimate": True, "max_depth": None}
+    assert seen == [want, want]

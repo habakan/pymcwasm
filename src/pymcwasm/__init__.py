@@ -252,8 +252,13 @@ class Compiled:
         self._model = model
         self.log_lik = list(log_lik)
 
-    async def sample(self, draws=1000, warmup=1000, seed=42, chains=1, log_lik=True):
+    async def sample(self, draws=1000, warmup=1000, seed=42, chains=1, log_lik=True,
+                     target_accept=None, grad_based_estimate=None, max_depth=None):
         """`chains` run one after another from the same start, chain c seeded `seed + c`.
+
+        `target_accept`, `grad_based_estimate` (nuts-rs's gradient-based metric
+        estimate, on in nutpie, off in tapewasm) and `max_depth` (tapewasm 0.3.5)
+        go to the sampler; None keeps tapewasm's default.
 
         `log_lik` asks the module for each draw's pointwise log-likelihood, which
         is one forward pass per draw and what `az.loo` reads. It needs a tapewasm
@@ -262,7 +267,8 @@ class Compiled:
         n = len(self.names)
         runs = [
             await _bridge.draw(self._handle, self._tw, self.init, warmup, draws, seed + c,
-                               self.names, chain=c)
+                               self.names, chain=c, target_accept=target_accept,
+                               grad_based_estimate=grad_based_estimate, max_depth=max_depth)
             for c in range(chains)
         ]
         flat = np.stack([np.asarray(r["draws"], dtype=float).reshape(-1, n) for r in runs])
@@ -301,8 +307,9 @@ class Compiled:
                              self.compile_ms, self.lower_ms, self._model)
 
 
-async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True):
-    """Lower `model` and emit its module.
+async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True,
+                  reroll="auto"):
+    """Lower `model` and emit its module; `reroll` is tapewasm's, `"never"` for V8.
 
     The data is part of the tape, so the result answers for one model and one
     dataset — but for as many draws as asked for.
@@ -321,16 +328,16 @@ async def compile(model, point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH, log_li
         [np.asarray(point[v.name], dtype=float).ravel() for v in model.value_vars]
     )
     lower_ms = (time.perf_counter() - t0) * 1000
-    handle, tw = await _bridge.compile(tape, tapewasm_path)
+    handle, tw = await _bridge.compile(tape, tapewasm_path, reroll)
     return Compiled(handle, tw, names, init, lower_ms, model, log_lik)
 
 
 async def sample(model, draws=1000, warmup=1000, seed=42, chains=1, point=None,
-                 tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True):
-    """Compile `model` and draw from it, in one go."""
-    compiled = await compile(model, point, tapewasm_path, log_lik=log_lik)
+                 tapewasm_path=DEFAULT_TAPEWASM_PATH, log_lik=True, reroll="auto", **settings):
+    """Compile `model` and draw from it, in one go; `settings` go to `Compiled.sample`."""
+    compiled = await compile(model, point, tapewasm_path, log_lik=log_lik, reroll=reroll)
     return await compiled.sample(draws=draws, warmup=warmup, seed=seed, chains=chains,
-                                 log_lik=log_lik)
+                                 log_lik=log_lik, **settings)
 
 
 async def fit(model, n=10000, method="advi", point=None, tapewasm_path=DEFAULT_TAPEWASM_PATH,

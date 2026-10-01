@@ -52,6 +52,10 @@ fit["beta"]      # one parameter's draws
 fit.summary()    # mean and sd per parameter
 ```
 
+`reroll="never"` emits the straight-line module, which V8 runs about twice as fast on
+a large model, and `target_accept`, `grad_based_estimate` and `max_depth` go to the
+sampler as nutpie's options do.
+
 ```
 npm install
 npm start        # then open /examples/pyodide/
