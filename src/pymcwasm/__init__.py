@@ -257,8 +257,8 @@ class Compiled:
         """`chains` run one after another from the same start, chain c seeded `seed + c`.
 
         `target_accept`, `grad_based_estimate` (nuts-rs's gradient-based metric
-        estimate, on in nutpie, off in tapewasm) and `max_depth` go to the sampler;
-        None keeps tapewasm's default.
+        estimate, on in nutpie, off in tapewasm) and `max_depth` (tapewasm 0.3.5)
+        go to the sampler; None keeps tapewasm's default.
 
         `log_lik` asks the module for each draw's pointwise log-likelihood, which
         is one forward pass per draw and what `az.loo` reads. It needs a tapewasm
