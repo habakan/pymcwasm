@@ -944,8 +944,8 @@ def _orders_parameters(var, tainted):
                  else {op_name(scalar)})
         if names & ORDERING and any(i in tainted for i in v.owner.inputs):
             return True
-        if not names & {"EQ", "NEQ"}:  # past an equality are values, not conditions
-            todo.extend(v.owner.inputs)
+        # Past an equality are values, not conditions, unless it compares a condition.
+        todo.extend(i for i in v.owner.inputs if not names & {"EQ", "NEQ"} or i.dtype == "bool")
     return False
 
 
