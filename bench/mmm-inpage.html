@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MMM in the page</title>
+<pre id="status">starting</pre>
+<script type="module">
+// Runs bench/mmm-inpage-worker.js and leaves its result on window.RESULT for bench/mmm-browser.mjs.
+const q = new URLSearchParams(location.search);
+const w = new Worker("mmm-inpage-worker.js", { type: "module" });
+w.onmessage = ({ data }) => {
+  if (data.msg) document.getElementById("status").textContent = data.msg;
+  if (data.error) { window.RESULT = { error: data.error }; document.getElementById("status").textContent = data.error; }
+  if (data.done) { window.RESULT = data.done; document.getElementById("status").textContent = "done"; }
+};
+w.postMessage({ reroll: q.get("reroll") ?? "never", seeds: [42, 142, 242, 342, 442] });
+</script>
