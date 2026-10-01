@@ -315,8 +315,9 @@ examples/pyodide/  the in-page path
 
 ## What it cannot do
 
-- **`Scan` is not lowered**, so state-space models are out. It did not appear in
-  any of the nine logp graphs surveyed, but it will.
+- **A `Scan` is unrolled**, so its step count is fixed when the model is compiled
+  and the module grows with it. A `while` loop, and a `Scan` over another's
+  gradient, are refused.
 - **A `Switch` on an ordering of parameters needs tapewasm 0.3.5**, whose `pick`
   takes the branch where the module is evaluated rather than where it was traced;
   0.3.3 refuses the tape. A bounds check (one side an infinity) and a test for

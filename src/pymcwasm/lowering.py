@@ -11,8 +11,8 @@ wrongly folded into a constant shows up as a mismatch.
     uv run --with pymc --with scipy python tools/lower_pytensor.py
 
 A spike, not a backend: it covers elementwise ops, sums, indexing, contraction
-and the bounds checks the transforms make vacuous. `Cholesky` and `Scan` are
-not lowered. A `Switch` on an ordering of parameters becomes tapewasm's `pick`
+and the bounds checks the transforms make vacuous. A `Scan` is unrolled over its
+fixed step count. A `Switch` on an ordering of parameters becomes tapewasm's `pick`
 (0.3.5); one on a bounds check or an equality folds at the trace point.
 """
 
@@ -818,6 +818,67 @@ def _alloc_empty(op, node, ins, cx):
     return ("c", np.zeros(tuple(int(np.asarray(x[1]).item()) for x in ins)))
 
 
+def _stack(low, vals):
+    """One lowered value from a list of them, constants made nodes if any is not."""
+    if not any(is_tape(v) for v in vals):
+        return ("c", np.stack([np.asarray(v[1], dtype=float) for v in vals]))
+    node = np.frompyfunc(lambda c: low.w.const_node(float(c)), 1, 1)
+    return ("t", np.stack([np.asarray(v[1], dtype=object) if is_tape(v) else node(np.asarray(v[1]))
+                           for v in vals]))
+
+
+def _row(value, i):
+    return (value[0], np.asarray(value[1])[i])
+
+
+@lowers("Scan")
+def _scan(op, node, ins, cx):
+    """Unrolled: the inner graph lowered once per step into the tape.
+
+    The step count is fixed when the graph is traced, and the tape grows with it.
+    Sequences, sit-sot and mit-sot states, nit-sot outputs and non-sequences; not a
+    `while` loop, mit-mot (gradients of a scan) or an untraced state.
+    """
+    info = op.info
+    if info.as_while or info.mit_mot_in_slices or info.n_untraced_sit_sot:
+        raise NotImplementedError("a Scan with a while condition, mit-mot or untraced state")
+    if is_tape(ins[0]):
+        raise NotImplementedError("a Scan whose step count depends on a parameter")
+    steps = int(np.asarray(ins[0][1]).item())
+    at = 1
+    def take(k):
+        nonlocal at
+        at += k
+        return ins[at - k:at]
+    seqs = take(info.n_seqs)
+    taps = list(info.mit_sot_in_slices) + list(info.sit_sot_in_slices)
+    buffers = take(len(taps))
+    take(info.n_nit_sot)  # their lengths; the steps give them
+    non_seqs = take(info.n_non_seqs)
+
+    if steps == 0:
+        raise NotImplementedError("a Scan of zero steps")
+    # Each state keeps its initial rows, then one row per step appended.
+    past = [-min(t) for t in taps]
+    if any(np.shape(b[1])[0] != p + steps for b, p in zip(buffers, past)):
+        raise NotImplementedError("a Scan whose state buffer is not its initial rows and one per step")
+    states = [[_row(b, i) for i in range(p)] for b, p in zip(buffers, past)]
+    collected = [[] for _ in range(info.n_nit_sot)]
+    inner_in, inner_out = op.inner_inputs, op.inner_outputs
+    for t in range(steps):
+        values = [_row(s, t) for s in seqs]
+        for state, p, tap in zip(states, past, taps):
+            values += [state[p + t + k] for k in tap]
+        memo = dict(zip(inner_in, values + list(non_seqs)))
+        _, get = _walk(cx.low, memo, inner_out)
+        outs = [get(o) for o in inner_out]
+        for state, out in zip(states, outs):
+            state.append(out)
+        for got, out in zip(collected, outs[len(states):]):
+            got.append(out)
+    return [_stack(cx.low, s) for s in states] + [_stack(cx.low, c) for c in collected]
+
+
 @lowers("LogAddExp")
 def _logaddexp(op, node, ins, cx):
     # max(a, b) + log(1 + exp(-|a - b|)), written as softplus is, so neither side overflows.
@@ -955,6 +1016,20 @@ def lower_graph(inputs, outputs, at, guards=None, on_node=None, branch_on_tape=F
             ids[k] = w.emit("new_var", repr(float(val[k])))
         memo[v] = ("t", ids)
 
+    nodes, get = _walk(low, memo, outputs)
+    if on_node is not None:
+        for node in nodes:
+            if node.outputs[0] in memo:
+                on_node(node, memo[node.outputs[0]], w)
+    return w, [get(o) for o in outputs]
+
+
+def _walk(low, memo, outputs):
+    """Lower every node between `memo`'s variables and `outputs` into `memo`.
+
+    Returns the nodes walked and a lookup for any variable; a Scan walks its inner
+    graph this way once per step, into the same tape.
+    """
     # Fixed once: `memo` grows to hold every intermediate, and asking again
     # would treat those as graph inputs and walk nothing.
     nodes = io_toposort(list(memo), outputs)
@@ -976,10 +1051,6 @@ def lower_graph(inputs, outputs, at, guards=None, on_node=None, branch_on_tape=F
         assert not is_tape(got), "an index that depends on a parameter"
         return got[1]
 
-    def note(node):
-        if on_node is not None and node.outputs[0] in memo:
-            on_node(node, memo[node.outputs[0]], w)
-
     cx = SimpleNamespace(low=low, resolve_scalar=resolve_scalar, tainted=tainted)
     for node in nodes:
         if not any(i in tainted for i in node.inputs):
@@ -992,17 +1063,15 @@ def lower_graph(inputs, outputs, at, guards=None, on_node=None, branch_on_tape=F
         name = rule_for(op)
         if name not in LOWER:
             raise NotImplementedError(f"op {name}")
-        out = memo[node.outputs[0]] = LOWER[name](op, node, ins, cx)
+        out = LOWER[name](op, node, ins, cx)
         # Reshaping a folded comparison keeps its record, so a Switch after it can still
         # build the comparison and reshape that.
         if (LOWER[name] in RESHAPES and not is_tape(out)
                 and any(id(np.asarray(x[1])) in low.recipes for x in ins if not is_tape(x))):
             low.recipes[id(out[1])] = (out[1], (LOWER[name], op, node, cx), ins)
-
-    for node in nodes:
-        note(node)
-
-    return w, [get(o) for o in outputs]
+        # A rule for an op with several outputs returns one value per output.
+        memo.update(zip(node.outputs, out) if isinstance(out, list) else [(node.outputs[0], out)])
+    return nodes, get
 
 
 def lower(model, out_path, trace_at=None, test_at=None, on_node=None, log_lik=True):
