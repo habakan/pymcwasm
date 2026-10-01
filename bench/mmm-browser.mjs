@@ -5,28 +5,36 @@
 //   node bench/mmm-browser.mjs          # after `bench/mmm.py native`; serves the repository
 
 import { chromium } from "playwright";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { server } from "../serve.mjs";
 
 const PORT = Number(process.env.PORT ?? 8140);
 const OUT = new URL("models/mmm/browser.json", import.meta.url);
 const NUMBA = "https://pymc-labs.github.io/nuts-rs-wasm/benchmark.html";
+// The hosted page is not pinned: refuse a version whose fits are not the ones described,
+// and record which one ran.
+const hosted = await (await fetch(NUMBA)).text();
+for (const want of ["chains:2,tune:750,draws:500", "targetAccept:.9", "[42,142,242,342,442]"]) {
+  if (!hosted.includes(want)) throw new Error(`the hosted benchmark page no longer has ${want}`);
+}
+const hostedSha256 = createHash("sha256").update(hosted).digest("hex");
 const browser = await chromium.launch();
 
 // Every request the page and its workers make, from a fresh context.
 async function run(url, until, label) {
   const context = await browser.newContext();
-  let bytes = 0, requests = 0;
-  context.on("requestfinished", async (r) => {
-    requests++;
-    const s = await r.sizes().catch(() => null);
-    if (s) bytes += s.responseBodySize + s.responseHeadersSize;
-  });
+  // Bytes as they crossed the wire: the CDNs compress, the local server does not.
+  const sizes = [];
+  context.on("requestfinished", (r) => sizes.push(r.sizes().catch(() => null)));
   const page = await context.newPage();
   const t0 = Date.now();
   await page.goto(url);
   const result = await until(page);
-  const out = { ...result, network: { MB: bytes / 1e6, requests }, wall_seconds: (Date.now() - t0) / 1000 };
+  const done = (await Promise.all(sizes)).filter(Boolean);
+  const bytes = done.reduce((a, s) => a + s.responseBodySize + s.responseHeadersSize, 0);
+  const out = { ...result, network: { MB: bytes / 1e6, requests: sizes.length },
+                wall_seconds: (Date.now() - t0) / 1000 };
   console.log(label, JSON.stringify({ ...out.network, wall: out.wall_seconds }));
   await context.close();
   return out;
@@ -54,6 +62,7 @@ const numba = await run(NUMBA, async (page) => {
 const inpage = await run(`http://127.0.0.1:${PORT}/bench/mmm-inpage.html?reroll=never`, result, "in the page");
 const precompiled = await run(`http://127.0.0.1:${PORT}/bench/mmm-precompiled.html`, result, "compiled beforehand");
 
-fs.writeFileSync(OUT, JSON.stringify({ browser: `chromium ${browser.version()}`, numbaCold, numba, inpage, precompiled }));
+fs.writeFileSync(OUT, JSON.stringify({ browser: `chromium ${browser.version()}`, hostedSha256,
+  numbaCold, numba, inpage, precompiled }));
 await browser.close();
 server.close();

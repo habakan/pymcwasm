@@ -42,7 +42,8 @@ uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-edi
 
 What decides the gap is the time per evaluation. `reroll "auto"` suits SpiderMonkey and
 JavaScriptCore, and V8 runs this model's straight-line module (`"never"`, 309 KB, 134 KB
-gzipped, against 14 KB) twice as fast per evaluation: 14 µs against 29, and nutpie's 10.
+gzipped, against 14 KB) about twice as fast per evaluation, which brings it within about
+1.4x of nutpie's.
 The gradient-based metric estimate, which tapewasm leaves off by default and nutpie turns
 on, moves the step size from 0.083 to 0.224 and halves the evaluations, but it halves the
 ESS as well, so ESS per second barely moves; nutpie's own `draw_diag` row shows the same.
