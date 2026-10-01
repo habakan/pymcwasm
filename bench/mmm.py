@@ -3,6 +3,7 @@
     uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \\
       python bench/mmm.py native /path/to/nuts-rs-wasm
     node bench/mmm.mjs
+    node bench/mmm-browser.mjs
     uv run --python 3.12 --no-project --with pymc-marketing --with nutpie --with-editable . \\
       python bench/mmm.py table
 
@@ -28,6 +29,8 @@ def min_bulk_ess(draws):  # (chain, draw, param), unconstrained, in the sampler'
 
 
 def native(nrw):
+    import shutil
+
     import arviz_stats, nutpie, pymc, pymc_marketing
     from pymcwasm.build import build
 
@@ -36,6 +39,17 @@ def native(nrw):
     model = ns["model"]
     for reroll in ("auto", "never"):
         build(model, os.path.join(OUT, reroll), log_lik=False, expand=False, reroll=reroll)
+    # The precompiled page's copy. Its expansion needs tapewasm 0.3.4; without one the page
+    # times sampling alone.
+    try:
+        build(model, os.path.join(OUT, "browser"), log_lik=False, expand=True, reroll="never")
+    except RuntimeError as e:
+        if "tapewasm could not compile" not in str(e):
+            raise
+        print("expand.wasm not built:", str(e).splitlines()[-1])
+        build(model, os.path.join(OUT, "browser"), log_lik=False, expand=False, reroll="never")
+    for f in ("model.py", "mmm_example.csv"):
+        shutil.copy(os.path.join(nrw, "examples/mmm", f), OUT)
     compiled = nutpie.compile_pymc_model(model)
     runs = []
     for adaptation in ("diag", "draw_diag"):
@@ -100,8 +114,69 @@ def table():
             f"| {med(fits, lambda x: x['min_ess'] / x['seconds']):.1f} "
             f"| {med(fits, lambda x: x['seconds'] / x['evals'] * 1e6):.1f} "
             f"| {sum(x['divergences'] for x in fits)} | {gap(fits):.2f} sd |")
+    browser = os.path.join(OUT, "browser.json")
+    if os.path.exists(browser):
+        lines += browser_table(json.load(open(browser)), tw["nParams"], mean, sd)
     open(os.path.join(HERE, "RESULTS-mmm.md"), "w").write("\n".join(lines) + "\n")
     print("\n".join(lines))
+
+
+def browser_table(b, n, mean, sd):
+    """The three browser runs of bench/mmm-browser.mjs, beside each other."""
+    import statistics as st
+
+    def ours(r):
+        fits = r["fits"]
+        for f in fits:
+            f["min_ess"] = min_bulk_ess(np.asarray(f["draws"]).reshape(CHAINS, DRAWS, n))
+        pooled = np.concatenate([np.asarray(f["draws"]).reshape(-1, n) for f in fits])
+        return {"secs": [f["sampling_seconds"] for f in fits], "ess_s": [f["min_ess"] / f["sampling_seconds"] for f in fits],
+                "us": [f["sampling_seconds"] / f["evals"] * 1e6 for f in fits], "div": sum(f["divergences"] for f in fits),
+                "gap": f"{float(np.max(np.abs(pooled.mean(0) - mean) / sd)):.2f} sd"}
+
+    runs = b["numba"]["runs"]
+    numba = {"secs": [r["sampling_seconds"] for r in runs], "ess_s": [r["min_ess_per_second"] for r in runs],
+             "us": [r["sampling_seconds"] / r["logp_evaluations"] * 1e6 for r in runs],
+             "div": sum(r["divergences"] for r in runs), "gap": "—"}
+    ip, pc, cold = b["inpage"], b["precompiled"], b["numbaCold"]
+    rows = [
+        ("nuts-rs-wasm · Numba, compiled in the page (hosted demo, reused)", b["numba"]["network"], numba,
+         f"{cold['seconds_to_prepare']:.1f} + {b['numba']['preparation_wall_seconds']['reused']:.1f}"),
+        ("pymcwasm · tapewasm, compiled in the page (Pyodide)", ip["network"], ours(ip),
+         f"{ip['loaded_seconds']:.1f} + {ip['model_seconds'] + ip['compile_seconds']:.1f}"),
+        ("pymcwasm · tapewasm, compiled beforehand", pc["network"], ours(pc), f"{pc['readySeconds']:.2f}"),
+    ]
+    med = st.median
+    out = ["", "## In a browser", "",
+           f"{b['browser']}, `node bench/mmm-browser.mjs`, one page each from a fresh context; the hosted "
+           f"page's source had sha256 {b['hostedSha256'][:12]}, checked for the fits described here. Seeds 42 "
+           "to 442, 2 chains × (750 warmup + 500 draws), target_accept 0.9, the gradient-based metric "
+           "estimate on (nuts-rs's default there, set here); tapewasm with `reroll never`. The hosted "
+           "page jitters each chain's start, the two tapewasm pages do not.",
+           "",
+           "Ready is loading (runtime, packages and imports), then preparing the model (building it and "
+           "compiling its density). The hosted page's two parts come from two loads of it, the first stopped "
+           "once preparing starts; compiled beforehand, ready is only instantiating the modules.",
+           "",
+           "Sample s is what each path times: the Numba adapter's `sampling_seconds` (warmup, sampling, "
+           "expansion and Arrow), `pymcwasm`'s `Compiled.sample` in the page (whose `sampleWithStats` "
+           "evaluates the density once more per draw, about 3%, and converts the draws and statistics), "
+           "and `sample()` compiled beforehand, with one `expand.wasm` evaluate per draw "
+           f"{'included' if pc.get('expansion') else 'left out: its build needs tapewasm 0.3.4'}. ESS is "
+           "min bulk ESS over the seven free variables, ArviZ's on the hosted page and arviz-stats' here; "
+           "being rank-based it is the same in either space. Downloaded is bytes as sent: the CDNs "
+           "compress, the local server that serves this repository's files does not.",
+           "",
+           "The two tapewasm rows do not run one module: with the same versions, initial point and "
+           "seeds their draws differ, and so does the layout id the module hashes its constants into "
+           "(the page's against the build's), for a reason not yet pinned down. Each follows its own "
+           "trajectory, which is as much of their ESS gap as the table can explain.",
+           "", "| sampler | downloaded | requests | ready s | sample s | ESS/s | µs per eval | divergences "
+           "| means vs nutpie |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for name, net, r, ready in rows:
+        out.append(f"| {name} | {net['MB']:.1f} MB | {net['requests']} | {ready} | {med(r['secs']):.2f} "
+                   f"| {med(r['ess_s']):.1f} | {med(r['us']):.1f} | {r['div']} | {r['gap']} |")
+    return out
 
 
 if __name__ == "__main__":
