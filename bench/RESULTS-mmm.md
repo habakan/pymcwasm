@@ -9,9 +9,25 @@ Median of 10 fits of 2 chains × (750 warmup + 500 draws), target_accept 0.9. Th
 
 | sampler | sample s | gradient evals | step size | min bulk ESS | ESS/s | µs per eval | divergences | means vs nutpie |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| CPython · nutpie · adaptation diag | 0.78 | 74,597 | 0.229 | 169 | 215.8 | 10.5 | 0 | 0.00 sd |
-| CPython · nutpie · adaptation draw_diag | 1.50 | 149,502 | 0.084 | 381 | 254.4 | 10.0 | 0 | 0.03 sd |
-| V8 · tapewasm · reroll auto · grad-based metric off | 4.04 | 140,010 | 0.083 | 337 | 81.1 | 28.9 | 0 | 0.02 sd |
-| V8 · tapewasm · reroll auto · grad-based metric on | 2.24 | 77,256 | 0.224 | 186 | 84.1 | 29.2 | 0 | 0.04 sd |
-| V8 · tapewasm · reroll never · grad-based metric off | 1.98 | 140,010 | 0.083 | 337 | 163.5 | 14.2 | 0 | 0.02 sd |
-| V8 · tapewasm · reroll never · grad-based metric on | 1.09 | 77,256 | 0.224 | 186 | 162.6 | 14.2 | 0 | 0.04 sd |
+| CPython · nutpie · adaptation diag | 0.73 | 74,597 | 0.229 | 169 | 233.5 | 9.7 | 0 | 0.00 sd |
+| CPython · nutpie · adaptation draw_diag | 1.40 | 149,502 | 0.084 | 381 | 272.9 | 9.3 | 0 | 0.03 sd |
+| V8 · tapewasm · reroll auto · grad-based metric off | 3.90 | 140,010 | 0.083 | 337 | 84.8 | 27.5 | 0 | 0.02 sd |
+| V8 · tapewasm · reroll auto · grad-based metric on | 2.10 | 77,256 | 0.224 | 186 | 89.8 | 27.2 | 0 | 0.04 sd |
+| V8 · tapewasm · reroll never · grad-based metric off | 1.84 | 140,010 | 0.083 | 337 | 176.0 | 12.9 | 0 | 0.02 sd |
+| V8 · tapewasm · reroll never · grad-based metric on | 1.00 | 77,256 | 0.224 | 186 | 185.6 | 13.1 | 0 | 0.04 sd |
+
+## In a browser
+
+chromium 153.0.8010.12, `node bench/mmm-browser.mjs`, one page each from a fresh context; the hosted page's source had sha256 c8c53f2c1c53, checked for the fits described here. Seeds 42 to 442, 2 chains × (750 warmup + 500 draws), target_accept 0.9, the gradient-based metric estimate on (nuts-rs's default there, set here); tapewasm with `reroll never`. The hosted page jitters each chain's start, the two tapewasm pages do not.
+
+Ready is loading (runtime, packages and imports), then preparing the model (building it and compiling its density). The hosted page's two parts come from two loads of it, the first stopped once preparing starts; compiled beforehand, ready is only instantiating the modules.
+
+Sample s is what each path times: the Numba adapter's `sampling_seconds` (warmup, sampling, expansion and Arrow), `pymcwasm`'s `Compiled.sample` in the page (whose `sampleWithStats` evaluates the density once more per draw, about 3%, and converts the draws and statistics), and `sample()` compiled beforehand, with one `expand.wasm` evaluate per draw left out: its build needs tapewasm 0.3.4. ESS is min bulk ESS over the seven free variables, ArviZ's on the hosted page and arviz-stats' here; being rank-based it is the same in either space. Downloaded is bytes as sent: the CDNs compress, the local server that serves this repository's files does not.
+
+The two tapewasm rows do not run one module: with the same versions, initial point and seeds their draws differ, and so does the layout id the module hashes its constants into (the page's against the build's), for a reason not yet pinned down. Each follows its own trajectory, which is as much of their ESS gap as the table can explain.
+
+| sampler | downloaded | requests | ready s | sample s | ESS/s | µs per eval | divergences | means vs nutpie |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| nuts-rs-wasm · Numba, compiled in the page (hosted demo, reused) | 105.0 MB | 130 | 17.8 + 20.5 | 7.68 | 24.2 | 101.3 | 0 | — |
+| pymcwasm · tapewasm, compiled in the page (Pyodide) | 56.6 MB | 105 | 11.1 + 1.2 | 1.18 | 158.4 | 15.3 | 0 | 0.05 sd |
+| pymcwasm · tapewasm, compiled beforehand | 0.8 MB | 8 | 0.01 | 1.06 | 125.5 | 14.2 | 0 | 0.03 sd |
