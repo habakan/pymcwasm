@@ -182,7 +182,11 @@ async def draw(handle, tw, init, warmup, draws, seed, param_names, chain=0,
     )
     return sampler(
         tw, handle, list(init), int(warmup), int(draws), int(seed), list(param_names),
-        int(chain), target_accept, grad_based_estimate, max_depth,
+        int(chain),
+        # Plain Python values: a numpy bool reaches wasm as a proxy, which reads as false.
+        None if target_accept is None else float(target_accept),
+        None if grad_based_estimate is None else bool(grad_based_estimate),
+        None if max_depth is None else int(max_depth),
     ).to_py()
 
 
