@@ -309,7 +309,7 @@ class Lowerer:
         # A bounds check — one side a constant infinity — holds everywhere the
         # transforms reach, so it folds at the trace point as it always has.
         # So does a test for equality: a parameter meets it on a set of measure zero.
-        bounds = any(not is_tape(x) and np.isinf(np.asarray(x[1], dtype=float)).any() for x in (a, b))
+        bounds = self.bounds(a, b)
         if self.branch_on_tape and not bounds and (is_tape(cond) or self.ordering(cond)):
             c = (self.compare_on_tape("NEQ", cond, ("c", np.array(0.0))) if is_tape(cond)
                  else self.materialize(cond))
@@ -330,6 +330,21 @@ class Lowerer:
             out[k] = taken if is_tape(src) else self.w.const_node(taken)
         return ("t", out)
 
+    @staticmethod
+    def bounds(a, b):
+        """One side wholly a constant infinity, as a bounds check's `-inf` is."""
+        return any(not is_tape(x) and np.isinf(np.asarray(x[1], dtype=float)).all() for x in (a, b))
+
+    def check_condition(self, depends, cond, a, b):
+        """Refuse a condition that depends on a parameter but reached the Switch folded
+        with no record of the comparison (it went through a stack or an `all`): folding
+        it would bake in the trace point's branch."""
+        if (self.branch_on_tape and depends and not is_tape(cond)
+                and id(cond[1]) not in self.recipes and not self.bounds(a, b)):
+            raise NotImplementedError(
+                "a Switch whose condition depends on a parameter through an op that keeps "
+                "no record of the comparison")
+
     def ordering(self, value):
         """Whether a folded condition compares parameters by order, anywhere in it."""
         if is_tape(value) or id(value[1]) not in self.recipes:
@@ -343,6 +358,9 @@ class Lowerer:
             return value
         _, name, ins = self.recipes[id(value[1])]
         ins = [self.materialize(x) for x in ins]
+        if isinstance(name, tuple):  # a reshape of one: (rule, op, node, cx)
+            rule, op, node, cx = name
+            return rule(op, node, ins, cx)
         if name in TAPE_COMPARISON:
             return self.compare_on_tape(name, *ins)
         if name == "AND":
@@ -367,7 +385,8 @@ class Lowerer:
 
     def branch(self, c, a, b):
         """`a` where `c` is 1 and `b` where it is 0: two picks added, not a product, so
-        the NaN of the side not taken reaches neither the value nor the gradient."""
+        the NaN of the side not taken stays out of the value. Its gradient is right where
+        that side's partials are finite; PyTensor's switch rewrites also cover infinite ones."""
         if not is_tape(c):
             return self.select(c, a, b)
         return self.binary("Add", self.pick(c, a), self.pick(self.binary("Sub", ("c", np.array(1.0)), c), b))
@@ -642,14 +661,19 @@ def _max_min(op, node, ins, cx):
 @lowers("Elemwise")
 def _elemwise(op, node, ins, cx):
     inner = op.scalar_op
+    if op_name(inner) == "Switch":
+        cx.low.check_condition(_orders_parameters(node.inputs[0], cx.tainted), *ins)
     if op_name(inner) != "Composite":
         return cx.low.scalar_op(op_name(inner), ins)
     # A fused run of scalar ops: lower its own graph over the same inputs.
     if len(inner.fgraph.outputs) != 1:
         raise NotImplementedError("a Composite with several outputs")
     vals = dict(zip(inner.fgraph.inputs, ins))
+    outer = dict(zip(inner.fgraph.inputs, node.inputs))
     for n in inner.fgraph.toposort():
         args = [vals[i] if i in vals else ("c", np.asarray(i.data, dtype=float)) for i in n.inputs]
+        if op_name(n.op) == "Switch" and n.inputs[0] in outer:
+            cx.low.check_condition(_orders_parameters(outer[n.inputs[0]], cx.tainted), *args)
         vals[n.outputs[0]] = cx.low.scalar_op(op_name(n.op), args)
     return vals[inner.fgraph.outputs[0]]
 
@@ -840,6 +864,31 @@ def _concat(op, node, ins, cx):
     return ("t", np.concatenate(arrs, axis=axis))
 
 
+ORDERING = {"GT", "GE", "LT", "LE", "Maximum", "Minimum"}
+
+
+def _orders_parameters(var, tainted):
+    """Whether `var` depends on a parameter through an ordering — what folding at the
+    trace point gets wrong. An equality, met on a set of measure zero, is fine to fold."""
+    seen, todo = set(), [var]
+    while todo:
+        v = todo.pop()
+        if v in seen or v not in tainted or v.owner is None:
+            continue
+        seen.add(v)
+        scalar = getattr(v.owner.op, "scalar_op", None)
+        names = ({op_name(n.op) for n in scalar.fgraph.toposort()} if op_name(scalar) == "Composite"
+                 else {op_name(scalar)})
+        if names & ORDERING and any(i in tainted for i in v.owner.inputs):
+            return True
+        todo.extend(v.owner.inputs)
+    return False
+
+
+# Rules that only move elements around, through which a folded comparison stays one.
+RESHAPES = {_dimshuffle_op, _subtensor, _alloc, _concat}
+
+
 def _eval_float(var):
     """A constant subgraph's value, computed in float64 where it is integer arithmetic.
 
@@ -931,7 +980,7 @@ def lower_graph(inputs, outputs, at, guards=None, on_node=None, branch_on_tape=F
         if on_node is not None and node.outputs[0] in memo:
             on_node(node, memo[node.outputs[0]], w)
 
-    cx = SimpleNamespace(low=low, resolve_scalar=resolve_scalar)
+    cx = SimpleNamespace(low=low, resolve_scalar=resolve_scalar, tainted=tainted)
     for node in nodes:
         if not any(i in tainted for i in node.inputs):
             continue
@@ -943,7 +992,12 @@ def lower_graph(inputs, outputs, at, guards=None, on_node=None, branch_on_tape=F
         name = rule_for(op)
         if name not in LOWER:
             raise NotImplementedError(f"op {name}")
-        memo[node.outputs[0]] = LOWER[name](op, node, ins, cx)
+        out = memo[node.outputs[0]] = LOWER[name](op, node, ins, cx)
+        # Reshaping a folded comparison keeps its record, so a Switch after it can still
+        # build the comparison and reshape that.
+        if (LOWER[name] in RESHAPES and not is_tape(out)
+                and any(id(np.asarray(x[1])) in low.recipes for x in ins if not is_tape(x))):
+            low.recipes[id(out[1])] = (out[1], (LOWER[name], op, node, cx), ins)
 
     for node in nodes:
         note(node)

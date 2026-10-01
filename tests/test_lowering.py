@@ -206,3 +206,48 @@ def test_a_constant_needed_before_any_op_lowers(tmp_path):
         pm.Normal("y", buf[0] + buf[1:].sum(), 1, observed=[0.4])
     got, want = lp_at(m, tmp_path, {"x": np.array(0.3)}, {"x": np.array(-0.8)})
     assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_switch_first_in_the_graph_lowers(tmp_path):
+    # Its comparison against 0 needs a constant before anything else is on the tape.
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        pm.Normal("y", pm.math.switch(a > 0, a, b), 1, observed=[0.2])
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.7), "b": np.array(0.1)},
+                      {"a": np.array(-0.4), "b": np.array(0.9)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_comparison_stacked_before_its_switch_still_branches(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        mu = pm.math.switch(pt.stack([a > 0, b > 0]), pt.stack([a, b]), 0.0)
+        pm.Normal("y", mu, 1, observed=[0.2, 0.1])
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.7), "b": np.array(-0.3)},
+                      {"a": np.array(-0.6), "b": np.array(0.4)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_switch_on_a_reduced_comparison_is_refused(tmp_path):
+    # `all` folds the comparisons into a plain constant, which would bake in the branch.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        mu = pm.math.switch(pt.all(pt.stack([a, b]) > 0), a, b)
+        pm.Normal("y", mu, 1, observed=[0.2])
+    with pytest.raises(NotImplementedError, match="keeps no record"):
+        lower(m, str(tmp_path / "m.tape"))
+
+
+def test_a_branch_infinite_in_some_elements_is_not_a_bounds_check(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a = pm.Normal("a", 0, 1)
+        mu = pm.math.switch(a > 0, a * pt.ones(2), pt.as_tensor([-np.inf, 3.0]))
+        pm.Potential("p", -0.5 * (mu[1] - 1.0) ** 2)
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.6)}, {"a": np.array(-0.5)})
+    assert got == pytest.approx(want, rel=1e-12)
