@@ -38,7 +38,8 @@ parameter-dependent index rather than freezing it at the trace point.
 
 - A `Scan` with a `while` condition, or one whose step count depends on a parameter;
   a fixed-length `Scan` is unrolled.
-- A `Switch` on a parameter, so no truncated or censored likelihoods.
+- `BetaInc`, which `accel_splines` reaches: an incomplete beta and its derivatives in every
+  argument.
 - Discrete parameters.
 - A Gaussian process is untried; its `Cholesky` is of a parameter-dependent
   covariance, so the tape grows with the cube of the number of points.
