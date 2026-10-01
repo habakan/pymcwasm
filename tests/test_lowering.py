@@ -363,3 +363,26 @@ def test_a_censored_student_t_lowers_an_incomplete_beta_per_observation(tmp_path
                     observed=[-1.0, 2.0, -1.0])
     got, want = lp_at(m, tmp_path, {"mu": np.array(0.3)}, {"mu": np.array(-2.4)})
     assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("trace,test", [(-0.5, 0.5), (0.5, -0.5)])
+def test_an_equality_on_a_clipped_rate_branches_where_it_is_evaluated(tmp_path, trace, test):
+    # Poisson's eq(rate, 0) holds for every f < 0 here, not on a point.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        f = pm.Normal("f", 0, 1)
+        pm.Poisson("y", pt.clip(f, 0, np.inf), observed=[0, 0])
+    got, want = lp_at(m, tmp_path, {"f": np.array(trace)}, {"f": np.array(test)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_clip_with_its_bounds_crossed_gives_the_lower_one(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        lo, hi = pm.Normal("lo", 0, 1), pm.Normal("hi", 0, 1)
+        pm.Normal("y", pt.clip(0.0, lo, hi), 1, observed=[0.5])
+    got, want = lp_at(m, tmp_path, {"lo": np.array(-0.3), "hi": np.array(0.4)},
+                      {"lo": np.array(0.8), "hi": np.array(-0.5)})
+    assert got == pytest.approx(want, rel=1e-12)
