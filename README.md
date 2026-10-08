@@ -232,8 +232,7 @@ density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 
 other is refused for its discrete parameter. On
 `irt_2pl` and `lsat` PyMC's own gradient is NaN in some terms where its density is
 finite, and those terms are checked against a central difference of the density instead.
-39 of the 82 — radon, kidiq and others whose data repeats rows, and the switches on a
-parameter — are refused by 0.3.3.
+CI checks all 82 against the lockfile's tapewasm.
 
 `pytest tests` runs on every push. The posteriordb check runs in CI when the lowering or
 the emitter moves, and weekly, and fails if a posterior in
