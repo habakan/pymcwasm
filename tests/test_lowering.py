@@ -268,25 +268,28 @@ def test_a_comparison_stacked_before_its_switch_still_branches(tmp_path):
     assert got == pytest.approx(want, rel=1e-12)
 
 
-def test_a_switch_on_a_reduced_comparison_is_refused(tmp_path):
-    # `all` folds the comparisons into a plain constant, which would bake in the branch.
+@pytest.mark.parametrize("trace,test", [((0.6, 0.4), (-0.5, 0.3)), ((-0.5, 0.3), (0.6, 0.4))])
+def test_a_switch_on_a_reduced_comparison_branches_where_it_is_evaluated(tmp_path, trace, test):
+    # `all` keeps the comparisons' record, so the branch is built rather than baked in.
     import pytensor.tensor as pt
 
     with pm.Model() as m:
         a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
-        mu = pm.math.switch(pt.all(pt.stack([a, b]) > 0), a, b)
+        mu = pm.math.switch(pt.eq(pt.all(pt.stack([a, b]) > 0), 1), a, b)
         pm.Normal("y", mu, 1, observed=[0.2])
-    with pytest.raises(NotImplementedError, match="keeps no record"):
-        lower(m, str(tmp_path / "m.tape"))
+    at = lambda v: {"a": np.array(v[0]), "b": np.array(v[1])}
+    got, want = lp_at(m, tmp_path, at(trace), at(test))
+    assert got == pytest.approx(want, rel=1e-12)
 
 
-def test_an_equality_on_a_reduced_comparison_is_refused(tmp_path):
-    # An equality stops the search for an ordering, but not one that compares a condition.
+def test_a_switch_on_a_count_of_comparisons_is_refused(tmp_path):
+    # A sum keeps no record of the comparisons it adds, which would bake in the branch.
     import pytensor.tensor as pt
 
     with pm.Model() as m:
-        a = pm.Normal("a", 0, 1)
-        pm.Potential("p", pt.switch(pt.eq(pt.all(a > pt.as_tensor([0.0, 0.5])), 1), a, -a))
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        mu = pm.math.switch(pt.sum(pt.stack([a, b]) > 0) > 1, a, b)
+        pm.Normal("y", mu, 1, observed=[0.2])
     with pytest.raises(NotImplementedError, match="keeps no record"):
         lower(m, str(tmp_path / "m.tape"))
 
@@ -396,3 +399,24 @@ def test_a_truncated_binomial_lowers_the_incomplete_beta_its_switch_discards(tmp
         pm.Truncated("y", pm.Binomial.dist(10, p), **bounds, observed=[3, 5, 7])
     got, want = lp_at(m, tmp_path, {"p_logodds__": np.array(0.2)}, {"p_logodds__": np.array(-0.9)})
     assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("a", [-0.5, 2.0])
+def test_a_bound_that_is_a_parameter_is_checked_where_it_is_evaluated(tmp_path, a):
+    # Observed data inside [a, a + 3] at the trace point; at a = 2 the 1.5 falls outside.
+    with pm.Model() as m:
+        lo = pm.Normal("lo", 0, 1)
+        pm.Uniform("y", lo, lo + 3, observed=[1.5, 0.2])
+    got, want = lp_at(m, tmp_path, {"lo": np.array(0.0)}, {"lo": np.array(a)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_transform_bounds_check_still_folds(tmp_path):
+    # The ranges show sigmoid * 5 within [0, 5] and exp positive at every parameter.
+    with pm.Model() as m:
+        pm.Uniform("u", 0, 5)
+        s = pm.HalfNormal("s", 1)
+        pm.Beta("p", 2, 2)
+        pm.Normal("y", 0, s, observed=[0.2])
+    lower(m, str(tmp_path / "m.tape"), m.initial_point(), m.initial_point())
+    assert "pick" not in {line.split()[0] for line in open(tmp_path / "m.tape")}
