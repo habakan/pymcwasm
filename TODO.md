@@ -41,5 +41,5 @@ parameter-dependent index rather than freezing it at the trace point.
 - `BetaInc`, which `accel_splines` reaches: an incomplete beta and its derivatives in every
   argument.
 - Discrete parameters.
-- A Gaussian process is untried; its `Cholesky` is of a parameter-dependent
-  covariance, so the tape grows with the cube of the number of points.
+- A Gaussian process past a few hundred points: its `Cholesky` is unrolled, so the
+  tape grows with the cube of the number of points.
