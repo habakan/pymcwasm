@@ -128,6 +128,43 @@ def test_the_expansion_is_each_variable_in_its_own_space_then_the_deterministics
     np.testing.assert_allclose([vals[i] for i in outputs], [0.3, -0.7, s, 0.3 * s, -0.7 * s])
 
 
+def _scan_models():
+    import pytensor
+    import pytensor.tensor as pt
+
+    y = np.sin(np.arange(12) / 3.0)
+    with pm.Model() as ar1:  # one state, its previous value
+        rho = pm.Normal("rho", 0, 0.5)
+        s = pm.HalfNormal("s", 1)
+        mu, _ = pytensor.scan(lambda prev, r: r * prev, outputs_info=[pt.as_tensor(y[0])],
+                              non_sequences=[rho], n_steps=len(y) - 1)
+        pm.Normal("y", mu, s, observed=y[1:])
+    with pm.Model() as ar2:  # one state, two taps
+        a = pm.Normal("a", 0, 0.5, shape=2)
+        s = pm.HalfNormal("s", 1)
+        mu, _ = pytensor.scan(lambda p2, p1, a: a[0] * p2 + a[1] * p1,
+                              outputs_info=[{"initial": pt.as_tensor(y[:2]), "taps": [-2, -1]}],
+                              non_sequences=[a], n_steps=len(y) - 2)
+        pm.Normal("y", mu, s, observed=y[2:])
+    with pm.Model() as seq:  # a sequence in, one output per step
+        b = pm.Normal("b", 0, 1)
+        s = pm.HalfNormal("s", 1)
+        mu, _ = pytensor.scan(lambda x, b: pt.exp(b * x), sequences=[pt.as_tensor(y)], non_sequences=[b])
+        pm.Normal("y", mu, s, observed=np.cos(y))
+    return {"ar1": ar1, "ar2": ar2, "seq": seq}
+
+
+@pytest.mark.parametrize("name", ["ar1", "ar2", "seq"])
+def test_a_scan_unrolls(tmp_path, name):
+    m = _scan_models()[name]
+    rng = np.random.default_rng(3)
+    ip = m.initial_point()
+    trace_at = {k: v + rng.normal(0, 0.3, np.shape(v)) for k, v in ip.items()}
+    test_at = {k: v + rng.normal(0, 0.3, np.shape(v)) for k, v in ip.items()}
+    got, want = lp_at(m, tmp_path, trace_at, test_at)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
 def _switch_models():
     t = np.arange(20.0)
     with pm.Model() as changepoint:  # the branch moves with tau
@@ -251,4 +288,18 @@ def test_a_branch_infinite_in_some_elements_is_not_a_bounds_check(tmp_path):
         mu = pm.math.switch(a > 0, a * pt.ones(2), pt.as_tensor([-np.inf, 3.0]))
         pm.Potential("p", -0.5 * (mu[1] - 1.0) ** 2)
     got, want = lp_at(m, tmp_path, {"a": np.array(0.6)}, {"a": np.array(-0.5)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_switch_on_a_scan_state_branches_where_it_is_evaluated(tmp_path):
+    import pytensor
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a, x = pm.Normal("a", 0, 1), pm.Normal("x", 0, 1)
+        out, _ = pytensor.scan(lambda p, a, x: pt.switch(p > a, p * 0.5, p + x),
+                               outputs_info=[pt.as_tensor(np.float64(1.0))], non_sequences=[a, x], n_steps=6)
+        pm.Normal("y", out, 1, observed=np.linspace(0, 1, 6))
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.2), "x": np.array(0.5)},
+                      {"a": np.array(0.9), "x": np.array(-0.3)})
     assert got == pytest.approx(want, rel=1e-12)

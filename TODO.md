@@ -36,7 +36,8 @@ parameter-dependent index rather than freezing it at the trace point.
 
 ## Elsewhere
 
-- `Scan`, so no state-space models.
+- A `Scan` with a `while` condition, or one whose step count depends on a parameter;
+  a fixed-length `Scan` is unrolled.
 - `BetaInc`, which `accel_splines` reaches: an incomplete beta and its derivatives in every
   argument.
 - Discrete parameters.
