@@ -320,11 +320,13 @@ examples/pyodide/  the in-page path
   gradient, are refused.
 - **A `Switch` on an ordering of parameters needs tapewasm 0.3.5**, whose `pick`
   takes the branch where the module is evaluated rather than where it was traced;
-  0.3.3 refuses the tape. A bounds check (one side an infinity) and a test for
-  equality, which a parameter meets on a set of measure zero, still fold, and so does
-  a bound that is a parameter on observed data (`Uniform("y", a, a + 3, observed=...)`),
-  which is wrong away from the trace point. A condition that orders parameters and then
-  goes through a reduction such as `all` is refused rather than folded. The gradient
+  0.3.3 refuses the tape. A bounds check (one side an infinity) folds only where the
+  ranges of what it compares give it one outcome at every parameter, as a transform's
+  do (`exp` is positive, an interval transform stays inside its interval, in exact
+  arithmetic); one on a bound that is a parameter (`Uniform("y", a, a + 3,
+  observed=...)`) is checked where the module is evaluated. A test for equality,
+  which a parameter meets on a set of measure zero, folds. A condition that orders
+  parameters through `all` branches; one through a count of comparisons is refused. The gradient
   through a `pick` is right where the branch not taken has finite partials; PyTensor's
   switch rewrites also cover infinite ones.
 - **Discrete parameters are refused by name**: NUTS samples continuous ones only.

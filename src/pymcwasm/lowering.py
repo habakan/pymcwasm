@@ -13,7 +13,7 @@ wrongly folded into a constant shows up as a mismatch.
 A spike, not a backend: it covers elementwise ops, sums, indexing, contraction
 and the bounds checks the transforms make vacuous. A `Scan` is unrolled over its
 fixed step count. A `Switch` on an ordering of parameters becomes tapewasm's `pick`
-(0.3.5); one on a bounds check or an equality folds at the trace point.
+(0.3.5), and so does a bounds check the nodes' ranges cannot show to hold everywhere.
 """
 
 import functools
@@ -86,17 +86,193 @@ def _run(nodes):
     return stride if all(b - a == stride for a, b in zip(xs, xs[1:])) else None
 
 
+INF = float("inf")
+EVERYWHERE = (-INF, INF, True, True)
+
+
+def _corners(pairs):
+    """The interval a set of (value, open) candidates spans; NaN among them, anything."""
+    if any(np.isnan(v) for v, _ in pairs):
+        return EVERYWHERE
+    lo, hi = min(v for v, _ in pairs), max(v for v, _ in pairs)
+    return (lo, hi, all(o for v, o in pairs if v == lo), all(o for v, o in pairs if v == hi))
+
+
+def _mul_range(a, b):
+    # 0 times an infinite end is 0: the other corners bound what lies beyond it.
+    prod = lambda x, y: 0.0 if 0 in (x, y) else x * y
+    return _corners([(prod(x, y), ox or oy) for x, ox in ((a[0], a[2]), (a[1], a[3]))
+                     for y, oy in ((b[0], b[2]), (b[1], b[3]))])
+
+
+def _positive(a):
+    return a[0] > 0 or (a[0] == 0 and a[2])
+
+
+def _monotone(f, a, increasing=True):
+    with np.errstate(all="ignore"):
+        lo, hi = float(f(a[0])), float(f(a[1]))
+    return (lo, hi, a[2], a[3]) if increasing else (hi, lo, a[3], a[2])
+
+
+def _range(op, args, ranges, values, leaf):
+    """The values node `op args` can take at any parameter, as (lo, hi, lo open, hi open),
+    in exact arithmetic: exp is positive though it underflows to 0 past -745."""
+    r = lambda k: ranges[int(args[k])]
+    c = lambda k: float(args[k])
+    point = lambda v: (v, v, False, False)
+    if op == "new_var":
+        return EVERYWHERE if leaf else point(c(0))
+    if op in ("add", "sub", "add_c", "sub_c", "rsub_c", "neg"):
+        a = r(0)
+        b = {"add": lambda: r(1), "sub": lambda: _negate(r(1)), "add_c": lambda: point(c(1)),
+             "sub_c": lambda: point(-c(1)), "rsub_c": lambda: point(c(1)),
+             "neg": lambda: point(0.0)}[op]()
+        if op in ("rsub_c", "neg"):
+            a = _negate(a)
+        return _add_range(a, b)
+    if op == "mul":
+        if str(args[0]) == str(args[1]):  # a square, which plain interval products miss
+            m = _range("abs", args[:1], ranges, values, leaf)
+            return _mul_range(m, m)
+        return _mul_range(r(0), r(1))
+    if op == "pow":
+        a, e = r(0), c(1)
+        if e == int(e) and int(e) % 2 == 0:
+            a = _range("abs", args[:1], ranges, values, leaf)
+        if a[0] < 0:
+            return EVERYWHERE
+        return _monotone(lambda v: np.power(v, e), a, increasing=e >= 0)
+    if op == "mul_c":
+        return _mul_range(r(0), point(c(1)))
+    if op == "div_c":
+        return _mul_range(r(0), point(1 / c(1))) if c(1) != 0 else EVERYWHERE
+    if op in ("div", "rdiv_c"):
+        num, den = (r(0), r(1)) if op == "div" else (point(c(1)), r(0))
+        if not (_positive(den) or _positive(_negate(den))):
+            return EVERYWHERE
+        sign = 1.0 if _positive(den) else -1.0
+        recip = lambda v: sign * INF if v == 0 else 1 / v  # an open end at 0
+        return _mul_range(num, (recip(den[1]), recip(den[0]), den[3], den[2]))
+    if op == "exp":
+        lo, hi, olo, ohi = _monotone(np.exp, r(0))
+        return (lo, hi, olo or lo == 0, ohi)
+    if op == "log":
+        return _monotone(np.log, r(0)) if _positive(r(0)) else EVERYWHERE
+    if op == "sqrt":
+        return _monotone(np.sqrt, r(0)) if r(0)[0] >= 0 else EVERYWHERE
+    if op == "abs":
+        a = r(0)
+        if a[0] >= 0:
+            return a
+        if a[1] <= 0:
+            return _negate(a)
+        return (0.0, max(-a[0], a[1]), False, True)
+    if op in ("sin", "cos"):
+        return (-1.0, 1.0, False, False)
+    if op == "phi":
+        return (0.0, 1.0, False, False)
+    if op in ("gt", "ge", "lt", "le", "eq", "ne"):
+        return (0.0, 1.0, False, False)
+    if op == "pick":
+        v = r(1)
+        return (min(v[0], 0.0), max(v[1], 0.0), v[2] and v[0] < 0, v[3] and v[1] > 0)
+    if op == "dot_c":
+        acc = point(0.0)
+        for i in range(int(args[0])):
+            acc = _add_range(acc, _mul_range(r(1 + 2 * i), point(c(2 + 2 * i))))
+        return acc
+    if op == "sum_run":
+        acc = r(0)
+        for i in range(int(args[1])):
+            acc = _add_range(acc, r(2 + i))
+        return acc
+    return EVERYWHERE
+
+
+def _affine(op, args, affine, ranges, i):
+    """Node i as alpha + beta * (one earlier node), when it is one: PyMC's interval transform
+    writes s * b + (1 - s) * a, whose range plain intervals widen past [a, b]."""
+    f = lambda k: affine[int(args[k])]
+    const = lambda k: ranges[int(args[k])][0] if ranges[int(args[k])][0] == ranges[int(args[k])][1] \
+        else None
+    scale = lambda g, c: (g[0], g[1] * c, g[2] * c)
+    if op in ("add_c", "sub_c"):
+        g, c = f(0), float(args[1]) * (1 if op == "add_c" else -1)
+        return (g[0], g[1] + c, g[2])
+    if op == "rsub_c":
+        g = f(0)
+        return (g[0], float(args[1]) - g[1], -g[2])
+    if op == "neg":
+        return scale(f(0), -1.0)
+    if op in ("mul_c", "div_c"):
+        c = float(args[1])
+        return scale(f(0), c if op == "mul_c" else 1 / c) if c else (i, 0.0, 1.0)
+    if op == "mul":
+        for k, other in ((0, 1), (1, 0)):
+            if const(other) is not None:
+                return scale(f(k), const(other))
+    if op in ("add", "sub") and f(0)[0] == f(1)[0]:
+        sign = 1 if op == "add" else -1
+        return (f(0)[0], f(0)[1] + sign * f(1)[1], f(0)[2] + sign * f(1)[2])
+    return (i, 0.0, 1.0)
+
+
+def _intersect(a, b):
+    low = max((a[0], a[2]), (b[0], b[2]), key=lambda e: (e[0], e[1]))
+    high = min((a[1], not a[3]), (b[1], not b[3]), key=lambda e: (e[0], e[1]))
+    return (low[0], high[0], low[1], not high[1])
+
+
+def _decided(name, a, b):
+    """Whether comparison `name` of a value in range `a` with one in `b` has one outcome."""
+    if name in ("LT", "LE"):
+        name, a, b = {"LT": "GT", "LE": "GE"}[name], b, a
+    touch_lo, touch_hi = a[0] == b[1], a[1] == b[0]
+    above = a[0] > b[1] or touch_lo and (name == "GE" or a[2] or b[3])
+    below = a[1] < b[0] or touch_hi and (name == "GT" or a[3] or b[2])
+    if name in ("GT", "GE"):
+        return above or below
+    apart = a[1] < b[0] or b[1] < a[0] or (a[1] == b[0] and (a[3] or b[2])) \
+        or (b[1] == a[0] and (b[3] or a[2]))
+    return apart or (a[0] == a[1] == b[0] == b[1])  # EQ, NEQ
+
+
+def _negate(a):
+    return (-a[1], -a[0], a[3], a[2])
+
+
+def _add_range(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] or b[2], a[3] or b[3])
+
+
 class TapeWriter:
     def __init__(self):
         self.lines = []
         self.values = []
+        self.ranges = []
+        self.affine = []
         self.n = 0
 
     def emit(self, *parts):
+        leaf = all(l.startswith("new_var") for l in self.lines)
         self.lines.append(" ".join(str(p) for p in parts))
         self.values.append(_apply(str(parts[0]), parts[1:], self.values))
+        op, args = str(parts[0]), parts[1:]
+        r = _range(op, args, self.ranges, self.values, leaf)
+        g = _affine(op, args, self.affine, self.ranges, self.n) if op != "new_var" else (self.n, 0.0, 1.0)
+        if g[0] != self.n:
+            r = _intersect(r, _add_range(_mul_range(self.ranges[g[0]], (g[2], g[2], False, False)),
+                                         (g[1], g[1], False, False)))
+        self.ranges.append(r)
+        self.affine.append(g)
         self.n += 1
         return self.n - 1
+
+    def bound(self, ids, lo, hi, lo_open, hi_open):
+        """Narrow the range of nodes whose value the lowering knows more about."""
+        for i in np.ravel(ids):
+            self.ranges[int(i)] = _intersect(self.ranges[int(i)], (lo, hi, lo_open, hi_open))
 
     def const_node(self, v):
         """A constant that has to reach the tape as a node.
@@ -260,7 +436,10 @@ class Lowerer:
         if name == "Log1p":
             return self.unary("Log", self.binary("Add", ins[0], ("c", np.array(1.0))))
         if name == "Sigmoid":
-            return self.unary("Exp", self.unary("Neg", self.scalar_op("Softplus", [self.unary("Neg", ins[0])])))
+            out = self.unary("Exp", self.unary("Neg", self.scalar_op("Softplus", [self.unary("Neg", ins[0])])))
+            if is_tape(out):
+                self.w.bound(out[1], 0.0, 1.0, True, True)
+            return out
         if name == "Pow":
             if not is_tape(ins[1]):
                 base = ins[0]
@@ -305,7 +484,10 @@ class Lowerer:
             x, ax = ins[0], self.unary("Abs", ins[0])
             relu = self.binary("Mul", self.binary("Add", x, ax), ("c", np.array(0.5)))
             tail = self.unary("Exp", self.unary("Neg", ax))
-            return self.binary("Add", relu, self.unary("Log", self.binary("Add", tail, ("c", np.array(1.0)))))
+            out = self.binary("Add", relu, self.unary("Log", self.binary("Add", tail, ("c", np.array(1.0)))))
+            if is_tape(out):
+                self.w.bound(out[1], 0.0, INF, True, True)
+            return out
         if name == "Log1mexp":
             inner = self.unary("Exp", ins[0])
             return self.unary("Log", self.binary("Sub", ("c", np.array(1.0)), inner))
@@ -358,11 +540,15 @@ class Lowerer:
         return self.binary("Mul", front, h)
 
     def select(self, cond, a, b, orders=False):
-        # A bounds check — one side a constant infinity — holds everywhere the
-        # transforms reach, so it folds at the trace point as it always has.
-        # So does a test for equality: a parameter meets it on a set of measure zero.
+        # A bounds check — one side a constant infinity — folds where the ranges of what
+        # it compares give it one outcome at every parameter, as a transform's do; one on
+        # a parameter bound (observed data against `a` in Uniform(a, b)) branches.
+        # A test for equality folds: a parameter meets it on a set of measure zero.
         bounds = self.bounds(a, b)
-        if self.branch_on_tape and not bounds and (is_tape(cond) or orders or self.ordering(cond)):
+        recorded = is_tape(cond) or id(cond[1]) in self.recipes
+        if self.branch_on_tape and (
+                (not bounds and (is_tape(cond) or orders or self.ordering(cond)))
+                or (bounds and recorded and not self.invariant(cond))):
             c = (self.compare_on_tape("NEQ", cond, ("c", np.array(0.0))) if is_tape(cond)
                  else self.materialize(cond))
             return self.branch(c, a, b)
@@ -396,6 +582,29 @@ class Lowerer:
             raise NotImplementedError(
                 "a Switch whose condition depends on a parameter through an op that keeps "
                 "no record of the comparison")
+
+    def invariant(self, value):
+        """Whether a folded condition has its trace-point value at every parameter, by the
+        ranges of the nodes its comparisons compare."""
+        if is_tape(value):
+            return False
+        if id(value[1]) not in self.recipes:
+            return True
+        _, name, ins = self.recipes[id(value[1])]
+        if not isinstance(name, str) or name not in TAPE_COMPARISON:
+            return all(self.invariant(x) for x in ins)
+        ra, rb = (self.ranges_of(x) for x in ins)
+        shape = np.broadcast_shapes(ra.shape, rb.shape)
+        ra, rb = np.broadcast_to(ra, shape), np.broadcast_to(rb, shape)
+        return all(_decided(name, ra[k], rb[k]) for k in np.ndindex(shape))
+
+    def ranges_of(self, x):
+        arr = np.asarray(x[1])
+        out = np.empty(arr.shape, dtype=object)
+        for k in np.ndindex(arr.shape):
+            v = arr[k]
+            out[k] = self.w.ranges[int(v)] if is_tape(x) else (float(v), float(v), False, False)
+        return out
 
     def ordering(self, value):
         """Whether a folded condition compares parameters by order, anywhere in it."""
@@ -679,11 +888,26 @@ def _advanced_key(op, index_ins):
 @lowers("All", "Any")
 def _all_any(op, node, ins, cx):
     a = ins[0]
-    assert not is_tape(a), "a bounds check that reached a parameter"
-    reduce = np.all if op_name(op) == "All" else np.any
     axis = getattr(op, "axis", None)
     axis = tuple(axis) if isinstance(axis, (list, tuple)) else axis
-    return ("c", np.asarray(reduce(np.asarray(a[1]) != 0, axis=axis), dtype=float))
+    if not is_tape(a):
+        reduce = np.all if op_name(op) == "All" else np.any
+        return ("c", np.asarray(reduce(np.asarray(a[1]) != 0, axis=axis), dtype=float))
+    # A materialized condition, each element 0 or 1: all is their product, any is
+    # 1 - the product of 1 - each.
+    low, one = cx.low, ("c", np.array(1.0))
+    flip = (lambda v: low.binary("Sub", one, v)) if op_name(op) == "Any" else (lambda v: v)
+    arr = np.asarray(a[1])
+    axes = tuple(range(arr.ndim)) if axis is None else tuple(x % arr.ndim for x in np.atleast_1d(axis))
+    rest = [d for d in range(arr.ndim) if d not in axes]
+    arr = np.transpose(arr, rest + list(axes)).reshape([arr.shape[d] for d in rest] + [-1])
+    out = np.empty(arr.shape[:-1], dtype=object)
+    for k in np.ndindex(out.shape):
+        prod = functools.reduce(lambda x, y: low.binary("Mul", x, y),
+                                [flip(("t", np.array(v))) for v in arr[k]])
+        prod = flip(prod)
+        out[k] = prod[1] if is_tape(prod) else low.w.const_node(float(prod[1]))
+    return ("t", out)
 
 
 @lowers("Sum")
@@ -1026,7 +1250,7 @@ def _orders_parameters(var, tainted):
 
 
 # Rules that only move elements around, through which a folded comparison stays one.
-RESHAPES = {_dimshuffle_op, _subtensor, _alloc, _concat}
+RESHAPES = {_dimshuffle_op, _subtensor, _alloc, _concat, _all_any}
 
 
 def _eval_float(var):
