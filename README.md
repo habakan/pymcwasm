@@ -227,12 +227,12 @@ moves with nutpie and not only with this code.
 **Beyond these seven**, `scripts/posteriordb.py` lowers every
 [posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
 implementation, emits it with npm's tapewasm as `pymcwasm-build` does, and checks its
-density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 81 of
+density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 82 of
 83 agree to 1e-8 or better, all 35 that have a reference posterior among them; the
-other two are refused (`BetaInc`, a discrete parameter). On
+other is refused for its discrete parameter. On
 `irt_2pl` and `lsat` PyMC's own gradient is NaN in some terms where its density is
 finite, and those terms are checked against a central difference of the density instead.
-CI checks all 81 against the lockfile's tapewasm.
+CI checks all 82 against the lockfile's tapewasm.
 
 `pytest tests` runs on every push. The posteriordb check runs in CI when the lowering or
 the emitter moves, and weekly, and fails if a posterior in
@@ -331,7 +331,7 @@ examples/pyodide/  the in-page path
 - **A Gaussian process grows with the cube of its points.** `gp.Marginal` and
   `gp.Latent` lower, their `Cholesky` unrolled over the covariance, so the module
   and an evaluation grow as n³: in V8, 0.5 MB and 0.2 ms at 60 points, 5.3 MB and
-  10 ms at 200. Past about 50 points only `reroll="auto"` (the default) compiles:
+  10 ms at 200. From 60 points only `reroll="auto"` (the default) compiles:
   V8 refuses a function over 7.6 MB. `gp.HSGP` grows with its basis instead.
 - **The starting point has to be searched for.** nuts-rs refuses a start whose
   gradient has a zero component, and PyMC's `initial_point()` is zeros — at which
