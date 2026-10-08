@@ -227,12 +227,12 @@ moves with nutpie and not only with this code.
 **Beyond these seven**, `scripts/posteriordb.py` lowers every
 [posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
 implementation, emits it with npm's tapewasm as `pymcwasm-build` does, and checks its
-density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 80 of
+density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 81 of
 83 agree to 1e-8 or better, all 35 that have a reference posterior among them; the
-other three are refused (`BetaInc`, `Maximum`, a discrete parameter). On
+other two are refused (`BetaInc`, a discrete parameter). On
 `irt_2pl` and `lsat` PyMC's own gradient is NaN in some terms where its density is
 finite, and those terms are checked against a central difference of the density instead.
-CI checks all 80 against the lockfile's tapewasm.
+CI checks all 81 against the lockfile's tapewasm.
 
 `pytest tests` runs on every push. The posteriordb check runs in CI when the lowering or
 the emitter moves, and weekly, and fails if a posterior in
@@ -317,8 +317,16 @@ examples/pyodide/  the in-page path
 
 - **`Scan` is not lowered**, so state-space models are out. It did not appear in
   any of the nine logp graphs surveyed, but it will.
-- **A `Switch` on a parameter is refused** rather than resolved while tracing,
-  which rules out truncated and censored likelihoods.
+- **A `Switch` on an ordering of parameters needs tapewasm 0.3.5**, whose `pick`
+  takes the branch where the module is evaluated rather than where it was traced;
+  0.3.3 refuses the tape. A bounds check (one side an infinity) and a test for
+  equality, which a parameter meets on a set of measure zero, still fold, and so does
+  a bound that is a parameter on observed data (`Uniform("y", a, a + 3, observed=...)`),
+  which is wrong away from the trace point. A condition that orders parameters and then
+  goes through a reduction such as `all` is refused rather than folded. The gradient
+  through a `pick` is right where the branch not taken has finite partials; PyTensor's
+  switch rewrites also cover infinite ones.
+- **Discrete parameters are refused by name**: NUTS samples continuous ones only.
 - **A Gaussian process is untried.** Its `Cholesky` is of a covariance built from
   the parameters, so it lowers to a cubic number of tape nodes in the number of
   points. Nothing is known to be wrong with it.

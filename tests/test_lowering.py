@@ -128,6 +128,56 @@ def test_the_expansion_is_each_variable_in_its_own_space_then_the_deterministics
     np.testing.assert_allclose([vals[i] for i in outputs], [0.3, -0.7, s, 0.3 * s, -0.7 * s])
 
 
+def _switch_models():
+    t = np.arange(20.0)
+    with pm.Model() as changepoint:  # the branch moves with tau
+        tau = pm.Uniform("tau", 0, 20)
+        mu1, mu2 = pm.Normal("mu1", 0, 5), pm.Normal("mu2", 0, 5)
+        pm.Normal("y", pm.math.switch(t < tau, mu1, mu2), 1, observed=np.where(t < 8, 1.0, 3.0))
+    with pm.Model() as maximum:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        pm.Normal("y", pm.math.maximum(a, b), 1, observed=[0.3, 0.8])
+    with pm.Model() as nan_branch:  # log x is NaN on the side not taken
+        x = pm.Normal("x", 0, 2)
+        pm.Normal("y", pm.math.switch(x > 0, pm.math.log(x), x), 1, observed=[0.1, -0.4])
+    return {"changepoint": changepoint, "maximum": maximum, "nan_branch": nan_branch}
+
+
+@pytest.mark.parametrize("name,trace,test", [
+    ("changepoint", {"tau_interval__": -1.2, "mu1": 1.0, "mu2": 3.0},
+     {"tau_interval__": 0.6, "mu1": 0.7, "mu2": 2.5}),
+    ("maximum", {"a": 0.9, "b": -0.2}, {"a": -0.5, "b": 0.4}),
+    ("nan_branch", {"x": 1.3}, {"x": -0.7}),
+])
+def test_a_switch_on_a_parameter_branches_where_it_is_evaluated(tmp_path, name, trace, test):
+    m = _switch_models()[name]
+    as_arrays = lambda p: {k: np.asarray(v, dtype=float) for k, v in p.items()}
+    got, want = lp_at(m, tmp_path, as_arrays(trace), as_arrays(test))
+    assert np.isfinite(got) and got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_bounds_check_still_folds(tmp_path):
+    # Uniform's switch(lower <= x <= upper, logp, -inf) holds wherever the transform reaches.
+    with pm.Model() as m:
+        pm.Uniform("u", 0, 5)
+        pm.Normal("y", 0, 1, observed=[0.2])
+    lower(m, str(tmp_path / "m.tape"), m.initial_point(), m.initial_point())
+    ops = {line.split()[0] for line in open(tmp_path / "m.tape")}
+    assert not ops & {"pick", "gt", "ge", "lt", "le", "eq", "ne"}
+
+
+def test_a_max_reduction_follows_the_largest_element(tmp_path):
+    # NormalMixture's logsumexp subtracts a max over the components.
+    with pm.Model() as m:
+        w = pm.Dirichlet("w", a=np.ones(3))
+        mu = pm.Normal("mu", 0, 3, shape=3)
+        pm.NormalMixture("y", w=w, mu=mu, sigma=1.0, observed=[0.1, 1.2, -0.3])
+    trace_at = {"w_simplex__": np.array([0.2, -0.1]), "mu": np.array([2.0, -1.0, 0.5])}
+    test_at = {"w_simplex__": np.array([-0.3, 0.4]), "mu": np.array([-1.5, 1.0, 2.5])}
+    got, want = lp_at(m, tmp_path, trace_at, test_at)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
 def test_an_ordered_transform_lowers(tmp_path):
     # Its backward pass fills an AllocEmpty with set_subtensor.
     with pm.Model() as m:
@@ -136,6 +186,13 @@ def test_an_ordered_transform_lowers(tmp_path):
     test_at = {"mu_ordered__": np.array([0.3, -0.5, 0.7])}
     got, want = lp_at(m, tmp_path, trace_at, test_at)
     assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_discrete_parameter_is_refused_by_name(tmp_path):
+    with pm.Model() as m:
+        pm.Bernoulli("z", 0.5, shape=2)
+    with pytest.raises(NotImplementedError, match=r"discrete parameters \(z\)"):
+        lower(m, str(tmp_path / "m.tape"))
 
 
 def test_a_constant_needed_before_any_op_lowers(tmp_path):
@@ -149,4 +206,49 @@ def test_a_constant_needed_before_any_op_lowers(tmp_path):
         buf = pt.set_subtensor(pt.empty((3,))[:1], x)
         pm.Normal("y", buf[0], 1, observed=[0.4])
     got, want = lp_at(m, tmp_path, {"x": np.array(0.3)}, {"x": np.array(-0.8)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_switch_first_in_the_graph_lowers(tmp_path):
+    # Its comparison against 0 needs a constant before anything else is on the tape.
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        pm.Normal("y", pm.math.switch(a > 0, a, b), 1, observed=[0.2])
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.7), "b": np.array(0.1)},
+                      {"a": np.array(-0.4), "b": np.array(0.9)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_comparison_stacked_before_its_switch_still_branches(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        mu = pm.math.switch(pt.stack([a > 0, b > 0]), pt.stack([a, b]), 0.0)
+        pm.Normal("y", mu, 1, observed=[0.2, 0.1])
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.7), "b": np.array(-0.3)},
+                      {"a": np.array(-0.6), "b": np.array(0.4)})
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+def test_a_switch_on_a_reduced_comparison_is_refused(tmp_path):
+    # `all` folds the comparisons into a plain constant, which would bake in the branch.
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a, b = pm.Normal("a", 0, 1), pm.Normal("b", 0, 1)
+        mu = pm.math.switch(pt.all(pt.stack([a, b]) > 0), a, b)
+        pm.Normal("y", mu, 1, observed=[0.2])
+    with pytest.raises(NotImplementedError, match="keeps no record"):
+        lower(m, str(tmp_path / "m.tape"))
+
+
+def test_a_branch_infinite_in_some_elements_is_not_a_bounds_check(tmp_path):
+    import pytensor.tensor as pt
+
+    with pm.Model() as m:
+        a = pm.Normal("a", 0, 1)
+        mu = pm.math.switch(a > 0, a * pt.ones(2), pt.as_tensor([-np.inf, 3.0]))
+        pm.Potential("p", -0.5 * (mu[1] - 1.0) ** 2)
+    got, want = lp_at(m, tmp_path, {"a": np.array(0.6)}, {"a": np.array(-0.5)})
     assert got == pytest.approx(want, rel=1e-12)

@@ -42,6 +42,7 @@ mesquite-logmesquite_logvash
 mesquite-mesquite
 nes_logit_data-nes_logit_model
 normal_2-normal_mixture
+normal_5-normal_mixture_k
 ovarian-logistic_regression_rhs
 pilots-pilots
 prostate-logistic_regression_rhs
