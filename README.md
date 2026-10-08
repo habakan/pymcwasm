@@ -227,12 +227,12 @@ moves with nutpie and not only with this code.
 **Beyond these seven**, `scripts/posteriordb.py` lowers every
 [posteriordb](https://github.com/stan-dev/posteriordb) posterior with a PyMC
 implementation, emits it with npm's tapewasm as `pymcwasm-build` does, and checks its
-density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.4, 79 of
+density, gradient and log-likelihood terms against PyMC's. With tapewasm 0.3.5, 81 of
 83 agree to 1e-8 or better, all 35 that have a reference posterior among them; the
-other four are refused (`AllocEmpty`, `BetaInc`, `Maximum`, a discrete parameter). On
+other two are refused (`BetaInc`, a discrete parameter). On
 `irt_2pl` and `lsat` PyMC's own gradient is NaN in some terms where its density is
 finite, and those terms are checked against a central difference of the density instead.
-38 of the 79 — radon, kidiq and others whose data repeats rows — are refused by 0.3.3.
+CI checks all 81 against the lockfile's tapewasm.
 
 `pytest tests` runs on every push. The posteriordb check runs in CI when the lowering or
 the emitter moves, and weekly, and fails if a posterior in
