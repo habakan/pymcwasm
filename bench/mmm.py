@@ -167,9 +167,9 @@ def browser_table(b, n, mean, sd):
            "being rank-based it is the same in either space. Downloaded is bytes as sent: the CDNs "
            "compress, the local server that serves this repository's files does not.",
            "",
-           "The two tapewasm rows do not run one module: with the same versions, initial point and "
-           "seeds their draws differ, and so does the layout id the module hashes its constants into "
-           "(the page's against the build's), for a reason not yet pinned down. Each follows its own "
+           "The two tapewasm rows do not run one module: the yearly Fourier features, `sin` and `cos` "
+           "of the dates, differ in the last bit between Pyodide's libm and the build machine's, so "
+           "30 of the tape's constants do and so does the layout id. Each module then follows its own "
            "trajectory, which is as much of their ESS gap as the table can explain.",
            "", "| sampler | downloaded | requests | ready s | sample s | ESS/s | µs per eval | divergences "
            "| means vs nutpie |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
